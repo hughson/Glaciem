@@ -115,6 +115,9 @@ and sending a test transaction between two wallets.
   consensus algorithm must be reviewed by cryptographers before real value
   depends on it.
 - ☐ **Mainnet launch** — only after review, with bootstrap-window protections.
+- ☐ **Masternodes** — a planned incentive layer for node operators: lock
+  collateral and earn a share of the block reward, to reward and grow the
+  full-node network beyond miners and volunteers.
 
 ## Known issues
 
