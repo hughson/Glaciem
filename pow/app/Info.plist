@@ -15,5 +15,9 @@
   <key>NSHighResolutionCapable</key> <true/>
   <key>NSPrincipalClass</key>        <string>NSApplication</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsArbitraryLoads</key>  <true/>
+  </dict>
 </dict>
 </plist>
