@@ -872,6 +872,7 @@ static void toggle_mining(HWND hwnd) {
       WaitForSingleObject(g_worker,12000);
       CloseHandle(g_worker); g_worker=NULL;
     }
+    g_sh.hashrate=0;   /* idle -> show 0, not the last reading */
   }
   InvalidateRect(hwnd,NULL,FALSE);
 }

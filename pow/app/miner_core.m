@@ -349,6 +349,7 @@ MinerStats miner_get_stats(void) {
   s=g_stats;
   pthread_mutex_unlock(&g_lock);
   s.running=g_running;
+  if(!s.running) s.hashrate=0;   /* idle -> report 0, not the last reading */
   return s;
 }
 const char *miner_device(void) {

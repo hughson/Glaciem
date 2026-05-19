@@ -100,6 +100,8 @@ class MinerEngine(private val rpc: RpcClient) {
         running = false
         minerThread?.join(8000)
         minerThread = null
+        hashrate = 0.0          // idle -> show 0, not the last reading
+        publish()
     }
 
     fun isRunning() = running
@@ -141,7 +143,7 @@ class MinerEngine(private val rpc: RpcClient) {
         _stats.value = MinerStats(
             running = running,
             daemonConnected = daemonConnected,
-            hashrate = hashrate,
+            hashrate = if (running) hashrate else 0.0,
             totalHashes = totalHashes,
             height = height,
             difficulty = difficulty,
