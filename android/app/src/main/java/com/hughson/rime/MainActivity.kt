@@ -503,7 +503,7 @@ private fun StartButton(running: Boolean, hasAddress: Boolean, onClick: () -> Un
     ) {
         Text(
             when {
-                blocked -> "GENERATE AN ADDRESS TO MINE"
+                blocked -> "SET UP A WALLET IN SETTINGS"
                 running -> "STOP"
                 else -> "START MINING"
             },
