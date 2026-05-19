@@ -22,8 +22,20 @@ const ORIGINS = [
   "http://static.34.142.105.178.clients.your-server.de",  // VM1 (178.105.142.34)
 ];
 
+// CORS so the Glaciem website can read live chain stats from the browser.
+const CORS = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Max-Age": "86400",
+};
+
 export default {
   async fetch(request) {
+    if (request.method === "OPTIONS") {
+      return new Response(null, { status: 204, headers: CORS });
+    }
+
     const url = new URL(request.url);
     const path = url.pathname + url.search;
     const method = request.method;
@@ -48,6 +60,7 @@ export default {
           headers: {
             "content-type":
               resp.headers.get("content-type") || "application/json",
+            ...CORS,
           },
         });
       } catch (e) {
@@ -57,7 +70,7 @@ export default {
 
     return new Response(
       JSON.stringify({ error: { code: -1, message: "all nodes unreachable" } }),
-      { status: 502, headers: { "content-type": "application/json" } }
+      { status: 502, headers: { "content-type": "application/json", ...CORS } }
     );
   },
 };

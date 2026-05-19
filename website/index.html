@@ -215,6 +215,58 @@
   </div>
 </div></header>
 
+<style>
+  #network{background:var(--bg2);padding:50px 0}
+  #network .netgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin-top:22px}
+  #network .netcell{background:var(--card);border-radius:10px;padding:18px 14px;text-align:center}
+  #network .netcell b{display:block;color:#3FC1E0;font-size:22px;font-weight:700;margin-bottom:4px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+  #network .netcell span{color:var(--dim);font-size:10px;letter-spacing:1.5px;text-transform:uppercase}
+  #network .net-note{color:var(--dim);font-size:12px;margin-top:18px;text-align:center}
+  @media (max-width:640px){#network .netgrid{grid-template-columns:repeat(2,1fr)}}
+</style>
+<section id="network"><div class="wrap">
+  <div class="eyebrow">LIVE NETWORK</div>
+  <h2>Chain status</h2>
+  <div class="netgrid">
+    <div class="netcell"><b id="net-status">…</b><span>status</span></div>
+    <div class="netcell"><b id="net-height">—</b><span>block height</span></div>
+    <div class="netcell"><b id="net-diff">—</b><span>difficulty</span></div>
+    <div class="netcell"><b id="net-hashrate">—</b><span>network hashrate</span></div>
+  </div>
+  <p class="net-note">Live from the Glaciem RPC proxy · updated <span id="net-updated">—</span></p>
+</div></section>
+<script>
+  (function(){
+    var WORKER = "https://glaciem-rpc.frostmine.workers.dev/json_rpc";
+    var LAUNCH = 1779249600 * 1000;
+    function fmt(n){return (n||0).toLocaleString();}
+    function $(id){return document.getElementById(id);}
+    async function tick(){
+      try {
+        var r = await fetch(WORKER, {
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body: JSON.stringify({jsonrpc:'2.0',id:'0',method:'get_info'})
+        });
+        var j = await r.json();
+        var info = j.result || {};
+        var preLaunch = Date.now() < LAUNCH;
+        $('net-status').textContent = preLaunch ? 'pre-launch' : (info.synchronized ? 'live' : 'syncing');
+        $('net-height').textContent = fmt(info.height);
+        $('net-diff').textContent = fmt(info.difficulty);
+        var hr = info.difficulty ? Math.round(info.difficulty / 120) : 0;
+        $('net-hashrate').textContent = (preLaunch || hr <= 1) ? '—' : (fmt(hr) + ' H/s');
+        $('net-updated').textContent = new Date().toLocaleTimeString();
+      } catch (e) {
+        $('net-status').textContent = 'offline';
+        $('net-updated').textContent = new Date().toLocaleTimeString();
+      }
+    }
+    tick();
+    setInterval(tick, 30000);
+  })();
+</script>
+
 <section id="about"><div class="wrap">
   <div class="eyebrow">WHAT GLACIEM IS</div>
   <h2>Three things, and nothing it doesn't need to be.</h2>
