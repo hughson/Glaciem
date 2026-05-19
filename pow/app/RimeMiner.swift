@@ -83,7 +83,7 @@ struct ContentView: View {
     @State private var walletAddrFull  = ""
     @State private var walletConnected = false
     @State private var balanceStr      = "0.000000"
-    @State private var nodeHost = UserDefaults.standard.string(forKey: "nodeHost") ?? "178.105.142.34"
+    @State private var nodeHost = UserDefaults.standard.string(forKey: "nodeHost") ?? "46.225.125.197"
     @State private var nodePort = (UserDefaults.standard.object(forKey: "nodePort") as? Int) ?? 19081
     @State private var showSettings = false
 
@@ -268,7 +268,7 @@ private struct SettingsSheet: View {
             }.buttonStyle(.plain)
             Button(action: {
                 let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
-                onSave(h.isEmpty ? "178.105.142.34" : h, Int(port) ?? 19081)
+                onSave(h.isEmpty ? "46.225.125.197" : h, Int(port) ?? 19081)
             }) {
                 Text("SAVE")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))

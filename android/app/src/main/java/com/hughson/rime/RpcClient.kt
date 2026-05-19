@@ -10,12 +10,15 @@ import java.net.URL
  * Ports the exact calls used by pow/app/miner_core.m.
  */
 class RpcClient {
-    @Volatile var nodeHost: String = "178.105.142.34"
+    // nodeHost/nodePort are the embedded wallet's daemon (direct to the node).
+    @Volatile var nodeHost: String = "46.225.125.197"
     @Volatile var nodePort: Int = 19081
-    @Volatile var walletHost: String = "178.105.142.34"
+    @Volatile var walletHost: String = "46.225.125.197"
     @Volatile var walletPort: Int = 29083
 
-    private fun nodeUrl() = "http://$nodeHost:$nodePort/json_rpc"
+    // Miner RPC goes through the Cloudflare proxy, which absorbs the connection
+    // storm a difficulty-1 miner produces; the node is never hit directly.
+    private fun nodeUrl() = "https://glaciem-rpc.frostmine.workers.dev/json_rpc"
     private fun walletUrl() = "http://$walletHost:$walletPort/json_rpc"
 
     /** POST a JSON-RPC request, return its `result` object (or null on failure). */

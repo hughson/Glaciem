@@ -35,7 +35,7 @@
 
 /* LAN/public address of the machine running rimed. Override with a
    command-line argument or a rime_host.txt file next to the .exe. */
-static char g_host[64] = "178.105.142.34";
+static char g_host[64] = "46.225.125.197";
 
 static void load_host(LPSTR cmd) {
   char tmp[64] = {0};
@@ -58,19 +58,21 @@ static void load_host(LPSTR cmd) {
   if (tmp[0]) snprintf(g_host,sizeof g_host,"%s",tmp);
 }
 
-/* POST `body` to http://g_host:port/json_rpc; response (truncated) into resp. */
+/* POST `body` to the Cloudflare RPC proxy over HTTPS. Cloudflare absorbs the
+   connection storm a difficulty-1 miner produces, so the node is never hit
+   directly for mining and cannot be traffic-scrubbed off the public net. */
 static int http_post(int port, const char *body, char *resp, int resp_sz) {
-  wchar_t whost[128];
-  MultiByteToWideChar(CP_UTF8,0,g_host,-1,whost,128);
+  (void)port;  /* miner RPC always goes through the Cloudflare proxy */
   int ok = 0;
   HINTERNET hs = WinHttpOpen(L"RimeMiner/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hs) return 0;
   WinHttpSetTimeouts(hs, 4000, 4000, 5000, 6000);
-  HINTERNET hc = WinHttpConnect(hs, whost, (INTERNET_PORT)port, 0);
+  HINTERNET hc = WinHttpConnect(hs, L"glaciem-rpc.frostmine.workers.dev",
+                                INTERNET_DEFAULT_HTTPS_PORT, 0);
   if (hc) {
     HINTERNET hr = WinHttpOpenRequest(hc, L"POST", L"/json_rpc", NULL,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, 0);
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
     if (hr) {
       if (WinHttpSendRequest(hr, L"Content-Type: application/json\r\n", (DWORD)-1,
                              (void*)body, (DWORD)strlen(body),

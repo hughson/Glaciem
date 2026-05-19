@@ -41,7 +41,7 @@ static MinerStats      g_stats;
 static char            g_device[64]   = "-";
 static char            g_lasthash[65] = "";
 static char            g_wallet_addr[160] = "";   /* embedded wallet's address */
-static char            g_node_host[128]   = "178.105.142.34";  /* rimed node host */
+static char            g_node_host[128]   = "46.225.125.197";  /* wallet's rimed node */
 static int             g_node_port        = 19081;        /* rimed RPC port  */
 static char            g_wallet_path[1024]= "";   /* embedded wallet file path */
 static RimeWallet   *g_wallet           = NULL; /* embedded wallet handle    */
@@ -95,13 +95,12 @@ static NSDictionary *json_rpc_url(NSString *url, NSString *method, id params) {
   id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
   return [resp isKindOfClass:NSDictionary.class] ? resp[@"result"] : nil;
 }
-/* node RPC (rimed) -- URL built from the runtime-settable host/port */
+/* Miner node RPC goes through the Cloudflare proxy. Cloudflare absorbs the
+   connection storm a difficulty-1 miner produces, so the node is never hit
+   directly for mining and cannot be traffic-scrubbed off the public net. */
 static NSDictionary *json_rpc(NSString *method, id params) {
-  pthread_mutex_lock(&g_lock);
-  NSString *url = [NSString stringWithFormat:@"http://%s:%d/json_rpc",
-                   g_node_host, g_node_port];
-  pthread_mutex_unlock(&g_lock);
-  return json_rpc_url(url, method, params);
+  return json_rpc_url(@"https://glaciem-rpc.frostmine.workers.dev/json_rpc",
+                      method, params);
 }
 
 /* ---- embedded-wallet poll: address + balance + sync state ---- */
