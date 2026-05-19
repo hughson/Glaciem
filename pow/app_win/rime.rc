@@ -1,0 +1,3 @@
+/* Windows resource script -- embeds the Rime app icon into the .exe.
+   Resource id 1 -> also becomes the icon Explorer shows for the file. */
+1 ICON "rime.ico"

@@ -1,0 +1,4 @@
+# build artifacts
+kernel_embed.h
+Rime Miner.exe
+*.o

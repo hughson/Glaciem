@@ -1,0 +1,6 @@
+# build artifacts
+Rime Miner.app/
+*.o
+RimeMiner
+build-xcode/
+Rime Miner.xcodeproj/

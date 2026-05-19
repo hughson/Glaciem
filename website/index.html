@@ -1,0 +1,373 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Glaciem — Mine Crypto on Mac &amp; Apple Silicon | CPU-Only Privacy Coin</title>
+<meta name="description" content="Glaciem (GLAC) is a CPU-only privacy cryptocurrency you can mine on a Mac — Apple Silicon M-series (M1, M2, M3, M4) included. No GPUs, no ASICs. Free miner apps for macOS, Windows and Android.">
+<meta name="keywords" content="mine crypto on mac, mining with apple silicon, M1 M2 M3 M4 mining, CPU mining, CPU-only proof of work, privacy coin, Monero fork, Glaciem, GLAC">
+<meta name="robots" content="index, follow">
+<meta name="theme-color" content="#0c0c11">
+<!-- Open Graph / link previews -->
+<meta property="og:type" content="website">
+<meta property="og:title" content="Glaciem — Mine Crypto on Mac &amp; Apple Silicon">
+<meta property="og:description" content="A CPU-only privacy coin, tuned for Apple Silicon. Mine it on the Mac you already own — no GPUs, no ASICs.">
+<meta name="twitter:card" content="summary">
+<meta name="twitter:title" content="Glaciem — Mine Crypto on Mac &amp; Apple Silicon">
+<meta name="twitter:description" content="A CPU-only privacy coin, tuned for Apple Silicon. Mine it on the Mac you already own.">
+<link rel="canonical" href="https://glaciem.frostmine.workers.dev/">
+<meta property="og:url" content="https://glaciem.frostmine.workers.dev/">
+<style>
+  :root{
+    --bg:#0c0c11; --bg2:#131319; --card:#1a1a22; --line:#26262f;
+    --amber:#3FC1E0; --amber-soft:#6dd4ee; --text:#f0f0f4; --dim:#8a8a99;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    line-height:1.6; -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono)}
+
+  /* nav */
+  nav{
+    position:sticky;top:0;z-index:50;
+    background:rgba(12,12,17,.82);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .brand{font-family:var(--mono);font-weight:800;letter-spacing:.18em;color:var(--amber);font-size:18px}
+  .navlinks a{color:var(--dim);font-size:13px;margin-left:26px;transition:color .15s}
+  .navlinks a:hover{color:var(--text)}
+  @media(max-width:560px){.navlinks a{margin-left:16px;font-size:12px}}
+
+  /* hero */
+  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
+  .hero::before{
+    content:"";position:absolute;top:-30%;left:50%;transform:translateX(-50%);
+    width:760px;height:760px;border-radius:50%;
+    background:radial-gradient(circle,rgba(63,193,224,.13),transparent 62%);
+    pointer-events:none;
+  }
+  .hero .wrap{
+    position:relative;display:flex;align-items:center;gap:48px;
+    padding:84px 24px 92px;
+  }
+  .hero-text{flex:1;min-width:0}
+  .pill{
+    display:inline-block;font-family:var(--mono);font-size:11px;letter-spacing:.12em;
+    color:var(--amber);border:1px solid rgba(63,193,224,.35);
+    border-radius:999px;padding:5px 12px;margin-bottom:22px;
+  }
+  /* mainnet countdown */
+  .countdown{
+    display:inline-flex;flex-direction:column;gap:9px;margin-bottom:24px;
+    border:1px solid rgba(63,193,224,.35);border-radius:14px;
+    padding:14px 20px;background:rgba(63,193,224,.05);
+  }
+  .cd-label{font-family:var(--mono);font-size:11px;letter-spacing:.16em;color:var(--amber)}
+  .cd-clock{display:flex;gap:20px}
+  .cd-clock div{display:flex;flex-direction:column;align-items:center;
+    font-family:var(--mono);font-size:9px;letter-spacing:.1em;color:var(--dim)}
+  .cd-clock b{font-size:32px;font-weight:800;color:var(--text);line-height:1.05}
+  .cd-live{font-family:var(--mono);font-size:20px;font-weight:800;color:var(--amber)}
+  h1{
+    font-family:var(--mono);font-weight:800;letter-spacing:.04em;
+    font-size:clamp(48px,9vw,86px);line-height:1;color:var(--amber);margin-bottom:18px;
+  }
+  .tag{font-size:clamp(17px,2.4vw,21px);color:var(--text);max-width:30ch}
+  .sub{color:var(--dim);font-size:15px;margin-top:14px;max-width:46ch}
+  .cta{margin-top:30px;display:flex;gap:12px;flex-wrap:wrap}
+  .btn{
+    font-family:var(--mono);font-size:13px;font-weight:700;letter-spacing:.04em;
+    padding:12px 22px;border-radius:10px;transition:transform .12s,filter .12s;
+  }
+  .btn:hover{transform:translateY(-2px)}
+  .btn-primary{background:var(--amber);color:#1a0f02}
+  .btn-primary:hover{filter:brightness(1.07)}
+  .btn-ghost{border:1px solid var(--line);color:var(--text)}
+  .btn-ghost:hover{border-color:var(--amber)}
+
+  /* hexagon lattice motif */
+  .hex{flex:0 0 280px;display:flex;align-items:center;justify-content:center}
+  @media(max-width:780px){
+    .hero .wrap{flex-direction:column;gap:8px;padding:64px 24px 72px}
+    .hex{flex:0 0 auto;margin-top:10px}.hex svg{width:200px;height:200px}
+  }
+
+  /* sections */
+  section{padding:78px 0;border-bottom:1px solid var(--line)}
+  .eyebrow{font-family:var(--mono);font-size:12px;letter-spacing:.18em;color:var(--amber);margin-bottom:12px}
+  h2{font-size:clamp(26px,4vw,34px);font-weight:700;letter-spacing:-.01em;margin-bottom:14px}
+  .lead{color:var(--dim);font-size:16px;max-width:60ch;margin-bottom:38px}
+
+  .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:18px}
+  @media(max-width:780px){.grid{grid-template-columns:1fr}}
+  .card{
+    background:var(--card);border:1px solid var(--line);border-radius:14px;
+    padding:26px;transition:border-color .15s,transform .15s;
+  }
+  .card:hover{border-color:rgba(63,193,224,.4);transform:translateY(-3px)}
+  .card h3{font-size:18px;margin-bottom:8px}
+  .card p{color:var(--dim);font-size:14px}
+  .card .ico{font-family:var(--mono);color:var(--amber);font-size:13px;letter-spacing:.1em;margin-bottom:14px}
+
+  /* lattice explainer */
+  .latgrid{display:grid;grid-template-columns:1fr 1fr;gap:20px;margin-top:8px}
+  @media(max-width:780px){.latgrid{grid-template-columns:1fr}}
+  .point{display:flex;gap:14px;padding:18px 0;border-top:1px solid var(--line)}
+  .point .n{font-family:var(--mono);color:var(--amber);font-size:13px;flex:0 0 28px}
+  .point h4{font-size:15px;margin-bottom:4px}
+  .point p{color:var(--dim);font-size:14px}
+
+  .proof{
+    margin-top:36px;background:linear-gradient(180deg,#181820,#15151c);
+    border:1px solid rgba(63,193,224,.28);border-radius:16px;padding:30px;
+  }
+  .proof .eyebrow{margin-bottom:10px}
+  .proof p{color:var(--text);font-size:15px;max-width:64ch}
+  .proof p .dim{color:var(--dim)}
+  .stats{display:flex;gap:34px;flex-wrap:wrap;margin-top:22px}
+  .stat .v{font-family:var(--mono);font-size:26px;color:var(--amber);font-weight:700}
+  .stat .k{font-size:12px;color:var(--dim);letter-spacing:.04em}
+
+  /* download */
+  .dl .card{display:flex;flex-direction:column}
+  .dl .card p{flex:1;margin-bottom:18px}
+  .dlbtn{
+    font-family:var(--mono);font-size:12px;font-weight:700;text-align:center;
+    border:1px solid var(--line);border-radius:9px;padding:10px;transition:.15s;
+  }
+  .dlbtn:hover{border-color:var(--amber);color:var(--amber)}
+
+  /* status band */
+  .status{background:var(--bg2)}
+  .status .box{
+    border:1px solid rgba(63,193,224,.3);border-radius:14px;
+    padding:28px 30px;background:rgba(63,193,224,.04);
+  }
+  .status h2{font-size:22px;margin-bottom:10px}
+  .status ul{list-style:none;color:var(--dim);font-size:14px}
+  .status li{padding:5px 0 5px 22px;position:relative}
+  .status li::before{content:"▸";position:absolute;left:0;color:var(--amber)}
+
+  footer{padding:46px 0;color:var(--dim);font-size:13px}
+  footer .wrap{display:flex;justify-content:space-between;gap:18px;flex-wrap:wrap}
+  footer a{color:var(--dim)}footer a:hover{color:var(--amber)}
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <div class="brand">GLACIEM</div>
+  <div class="navlinks">
+    <a href="#lattice">Lattice</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/hughson/rime">GitHub</a>
+  </div>
+</div></nav>
+
+<header class="hero"><div class="wrap">
+  <div class="hero-text">
+    <div class="countdown" id="countdown">
+      <div class="cd-label" id="cd-label">MAINNET LAUNCH · 20 MAY 2026, 00:00 EDT</div>
+      <div class="cd-clock" id="cd-clock">
+        <div><b id="cd-d">--</b>DAYS</div>
+        <div><b id="cd-h">--</b>HRS</div>
+        <div><b id="cd-m">--</b>MIN</div>
+        <div><b id="cd-s">--</b>SEC</div>
+      </div>
+    </div>
+    <h1>GLACIEM</h1>
+    <p class="tag">Mine a privacy coin on the Mac you already own.</p>
+    <p class="sub">Glaciem (GLAC) is a fork of Monero with <strong>Lattice</strong> — an original,
+      CPU-only proof-of-work tuned for the performance-per-watt of <strong>Apple Silicon</strong>
+      (M1, M2, M3, M4). No GPUs, no ASICs, no mining farms — just CPUs, on even footing.</p>
+    <div class="cta">
+      <a class="btn btn-primary" href="#download">Get a miner</a>
+      <a class="btn btn-ghost" href="#lattice">How Lattice works</a>
+    </div>
+  </div>
+  <div class="hex">
+    <svg width="260" height="260" viewBox="0 0 200 200" fill="none" aria-hidden="true">
+      <g stroke="#3FC1E0" stroke-width="2" stroke-linejoin="round">
+        <polygon points="100,20 169.3,60 169.3,140 100,180 30.7,140 30.7,60"
+                 fill="rgba(63,193,224,0.05)"/>
+        <line x1="100" y1="100" x2="100" y2="20"/>
+        <line x1="100" y1="100" x2="169.3" y2="60"/>
+        <line x1="100" y1="100" x2="169.3" y2="140"/>
+        <line x1="100" y1="100" x2="100" y2="180"/>
+        <line x1="100" y1="100" x2="30.7" y2="140"/>
+        <line x1="100" y1="100" x2="30.7" y2="60"/>
+      </g>
+      <g fill="#3FC1E0">
+        <circle cx="100" cy="100" r="7"/>
+        <circle cx="100" cy="20" r="5"/><circle cx="169.3" cy="60" r="5"/>
+        <circle cx="169.3" cy="140" r="5"/><circle cx="100" cy="180" r="5"/>
+        <circle cx="30.7" cy="140" r="5"/><circle cx="30.7" cy="60" r="5"/>
+      </g>
+    </svg>
+  </div>
+</div></header>
+
+<section id="about"><div class="wrap">
+  <div class="eyebrow">WHAT GLACIEM IS</div>
+  <h2>Three things, and nothing it doesn't need to be.</h2>
+  <p class="lead">Glaciem keeps Monero's privacy untouched and changes exactly one thing —
+    the proof-of-work — to put mining back on ordinary CPUs.</p>
+  <div class="grid">
+    <div class="card">
+      <div class="ico">PRIVATE</div>
+      <h3>Monero's privacy, unchanged</h3>
+      <p>RingCT, ring signatures, Bulletproofs+ and stealth addresses — inherited from
+        Monero exactly, mandatory on every transaction. None of it was modified.</p>
+    </div>
+    <div class="card">
+      <div class="ico">CPU-ONLY</div>
+      <h3>Lattice proof-of-work</h3>
+      <p>An original, integer-only, latency-bound algorithm. It has no GPU phase and
+        no ASIC market — verification is cheap and runs on any CPU.</p>
+    </div>
+    <div class="card">
+      <div class="ico">YOURS</div>
+      <h3>Mine on what you own</h3>
+      <p>Native apps for macOS, Windows and Android, each with a built-in wallet.
+        Generate an address and the blocks you find pay straight to it.</p>
+    </div>
+  </div>
+</div></section>
+
+<section id="lattice"><div class="wrap">
+  <div class="eyebrow">THE PROOF-OF-WORK</div>
+  <h2>Lattice</h2>
+  <p class="lead">Most coins drift toward specialised hardware — GPUs, then ASICs, then
+    farms. Lattice is shaped so that doesn't happen: each hash is work a CPU is simply
+    good at, and nothing else.</p>
+  <div class="latgrid">
+    <div>
+      <div class="point"><div class="n">01</div><div>
+        <h4>A long, serial walk</h4>
+        <p>Each hash is a branchy, latency-bound walk over a per-nonce scratchpad. It
+          can't be parallelised within a nonce — it rewards wide, high-IPC CPU cores.</p>
+      </div></div>
+      <div class="point"><div class="n">02</div><div>
+        <h4>No GPU phase</h4>
+        <p>The large per-nonce working set collapses GPU occupancy, and a data-dependent
+          branch every step causes warp divergence. There is no GPU code at all.</p>
+      </div></div>
+    </div>
+    <div>
+      <div class="point"><div class="n">03</div><div>
+        <h4>Cheap to verify</h4>
+        <p>Integer-only and deterministic. Any full node, on any platform, validates a
+          block by running one walk — no GPU, no special hardware.</p>
+      </div></div>
+      <div class="point"><div class="n">04</div><div>
+        <h4>Tuned for perf-per-watt</h4>
+        <p>The contest lands on CPUs — the terrain where modern, efficient cores like
+          Apple Silicon are strongest, and where electricity is priced normally.</p>
+      </div></div>
+    </div>
+  </div>
+
+  <div class="proof">
+    <div class="eyebrow">A MEASURED RESULT</div>
+    <p>We didn't just <em>design</em> Lattice to be fair — we benchmarked it. Across
+      Apple Silicon and x86, every standard optimization — SIMD, multi-nonce
+      interleaving, huge pages — <strong>failed to beat the straightforward build</strong>.
+      <span class="dim"> In plain terms: there is no secret fast miner to discover. The
+      open reference miner is already within a couple of percent of optimal, so
+      everyone mines on even footing.</span></p>
+    <div class="stats">
+      <div class="stat"><div class="v">CPU-only</div><div class="k">no GPU, no ASIC path</div></div>
+      <div class="stat"><div class="v">~2%</div><div class="k">reference miner vs. optimal</div></div>
+      <div class="stat"><div class="v">3</div><div class="k">native miner platforms</div></div>
+    </div>
+  </div>
+</div></section>
+
+<section id="download" class="dl"><div class="wrap">
+  <div class="eyebrow">DOWNLOAD</div>
+  <h2>Get a miner</h2>
+  <p class="lead">Each app bundles the Lattice miner and a wallet — generate an address,
+    sync, and mine. Download now and be set up, ready for the mainnet launch.</p>
+  <div class="grid">
+    <div class="card">
+      <div class="ico">MACOS</div>
+      <h3>Glaciem Miner for Mac</h3>
+      <p>Native SwiftUI app for Apple Silicon. Send, receive, sweep and view history
+        from a built-in wallet.</p>
+      <a class="dlbtn" href="https://github.com/hughson/rime/releases">Releases →</a>
+    </div>
+    <div class="card">
+      <div class="ico">WINDOWS</div>
+      <h3>Glaciem Miner for Windows</h3>
+      <p>A single self-contained 64-bit <span class="mono">.exe</span> — no installer,
+        no dependencies. Same embedded wallet.</p>
+      <a class="dlbtn" href="https://github.com/hughson/rime/releases">Releases →</a>
+    </div>
+    <div class="card">
+      <div class="ico">ANDROID</div>
+      <h3>Glaciem Miner for Android</h3>
+      <p>A Jetpack Compose app — mine on your phone, with the same generate / send /
+        receive / sweep wallet.</p>
+      <a class="dlbtn" href="https://github.com/hughson/rime/releases">Releases →</a>
+    </div>
+  </div>
+</div></section>
+
+<section class="status"><div class="wrap">
+  <div class="box">
+    <h2>Where Glaciem stands — honestly</h2>
+    <p style="color:var(--dim);font-size:14px;margin-bottom:12px">
+      Glaciem is an experimental project, not an investment. Read this before you mine.</p>
+    <ul>
+      <li>Mainnet launches <strong>20 May 2026, 00:00 EDT</strong> — a fair start: no premine, everyone mines from block 1.</li>
+      <li>GLAC is a brand-new coin with <strong>no exchange listing and no market price</strong>. Treat it as worth nothing — it is not an investment.</li>
+      <li>Lattice is <strong>experimental and has not had external cryptographic review</strong>. Mine at your own risk.</li>
+      <li>"Glaciem" and "GLAC" are working names, pending a trademark check.</li>
+      <li>Glaciem is a fork of <a href="https://github.com/monero-project/monero" style="color:var(--amber)">Monero</a>; all privacy and consensus technology is the Monero Project's work.</li>
+    </ul>
+  </div>
+</div></section>
+
+<footer><div class="wrap">
+  <div>Glaciem — BSD 3-Clause, forked from the Monero Project.</div>
+  <div>
+    <a href="https://github.com/hughson/rime">GitHub</a> &nbsp;·&nbsp;
+    <a href="https://github.com/hughson/rime/blob/rime/POW_DESIGN.md">Lattice design</a> &nbsp;·&nbsp;
+    <a href="https://github.com/monero-project/monero">Monero</a>
+  </div>
+</div></footer>
+
+<script>
+(function(){
+  // Mainnet launch: 2026-05-20 00:00:00 EDT (UTC-4)
+  var target = new Date("2026-05-20T00:00:00-04:00").getTime();
+  function pad(n){ return (n<10?"0":"")+n; }
+  var timer = setInterval(tick, 1000);
+  function tick(){
+    var diff = target - Date.now();
+    if(diff <= 0){
+      clearInterval(timer);
+      document.getElementById("cd-clock").innerHTML =
+        '<span class="cd-live">&#9679; MAINNET IS LIVE</span>';
+      document.getElementById("cd-label").textContent = "GLACIEM";
+      return;
+    }
+    var s = Math.floor(diff/1000);
+    document.getElementById("cd-d").textContent = Math.floor(s/86400);
+    document.getElementById("cd-h").textContent = pad(Math.floor(s/3600)%24);
+    document.getElementById("cd-m").textContent = pad(Math.floor(s/60)%60);
+    document.getElementById("cd-s").textContent = pad(s%60);
+  }
+  tick();
+})();
+</script>
+</body>
+</html>

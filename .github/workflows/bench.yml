@@ -1,0 +1,52 @@
+name: lattice-bench
+
+# x86 benchmark loop for the Lattice miner optimisation work. GitHub's Linux
+# runners are x86-64 with AVX2 -- the architecture we cannot measure on the
+# Apple Silicon dev machine. Results print to the Actions log.
+
+on:
+  workflow_dispatch:        # manual "Run workflow" button
+  push:
+    paths:
+      - 'pow/lattice_ref.c'
+      - 'pow/bench/**'
+      - '.github/workflows/bench.yml'
+
+jobs:
+  bench:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: CPU info
+        run: |
+          echo "== CPU =="
+          lscpu | grep -E 'Model name|^CPU\(s\)|Thread|L1d|L2|L3' || true
+          echo "== SIMD flags =="
+          grep -oE 'avx[a-z0-9_]*' /proc/cpuinfo | sort -u | tr '\n' ' '; echo
+          echo "== compilers =="
+          gcc --version | head -1
+          clang --version | head -1
+
+      - name: Scalar bench -- -O2 vs -O3+AVX2 (gcc and clang)
+        run: |
+          best() { for i in $(seq 14); do "$@" --bench; done \
+            | awk '{if($5<m||NR==1)m=$5} END{printf "  best: %7.3f ms/nonce  ->  %7.1f H/s/core\n",m,1000/m}'; }
+          for cc in gcc clang; do
+            $cc -O2                              -o /tmp/lat_o2_$cc  pow/lattice_ref.c
+            $cc -O3 -mavx2 -mbmi2 -funroll-loops -o /tmp/lat_o3_$cc  pow/lattice_ref.c
+            echo "[$cc] -O2";        best /tmp/lat_o2_$cc
+            echo "[$cc] -O3+AVX2";   best /tmp/lat_o3_$cc
+          done
+
+      - name: "#1 -- N=2 multi-nonce interleaving"
+        run: |
+          clang -O3 -mavx2 -mbmi2 -funroll-loops -o /tmp/x2 pow/bench/x2_interleave.c
+          /tmp/x2
+          echo "-- rerun --"; /tmp/x2 | grep -E 'scalar|x2|speedup'
+
+      - name: "#7 -- SIMD arx_perm (AVX2)"
+        run: |
+          clang -O3 -mavx2 -mbmi2 -funroll-loops -o /tmp/arx pow/bench/arx_simd.c
+          /tmp/arx
+          echo "-- rerun --"; /tmp/arx | grep -E 'scalar|SIMD|speedup'

@@ -1,0 +1,53 @@
+# xcodegen spec for Rime Miner (macOS).
+#   xcodegen generate   ->   "Rime Miner.xcodeproj"
+#   xcodebuild -project "Rime Miner.xcodeproj" -scheme "Rime Miner" ...
+#
+# Building through Xcode's pipeline (proper app bundle, asset processing,
+# signing) instead of bare `swiftc` -- works around the SwiftUI AttributeGraph
+# crash seen with command-line-tools swiftc on macOS 26.
+name: Rime Miner
+options:
+  bundleIdPrefix: org.rime
+  deploymentTarget:
+    macOS: "14.0"
+  createIntermediateGroups: true
+
+targets:
+  Rime Miner:
+    type: application
+    platform: macOS
+    sources:
+      - path: RimeMiner.swift
+      - path: miner_core.m
+      - path: miner_core.h
+      - path: AppIcon.icns
+        buildPhase: resources
+    dependencies:
+      - sdk: SwiftUI.framework
+      - sdk: CoreImage.framework
+    settings:
+      base:
+        PRODUCT_NAME: Rime Miner
+        EXECUTABLE_NAME: RimeMiner
+        PRODUCT_BUNDLE_IDENTIFIER: org.rime.rimeminer
+        INFOPLIST_FILE: Info.plist
+        GENERATE_INFOPLIST_FILE: "NO"
+        SWIFT_OBJC_BRIDGING_HEADER: bridging.h
+        SWIFT_VERSION: "5.0"
+        CLANG_ENABLE_OBJC_ARC: "YES"
+        MACOSX_DEPLOYMENT_TARGET: "14.0"
+        HEADER_SEARCH_PATHS:
+          - $(SRCROOT)/../keygen
+        OTHER_LDFLAGS:
+          - -lc++
+          - $(SRCROOT)/../keygen/librimekeygen.a
+        # ad-hoc signing, no team -- matches the old build.sh
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Manual
+        CODE_SIGNING_REQUIRED: "NO"
+        ENABLE_HARDENED_RUNTIME: "NO"
+        # build a normal monolithic executable -- no SwiftUI preview / debug
+        # dylib split (not needed for a command-line build, and its extra
+        # link step was failing).
+        ENABLE_DEBUG_DYLIB: "NO"
+        ENABLE_PREVIEWS: "NO"

@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Rime v1 talks to rimed / rime-wallet-rpc over plain HTTP JSON-RPC on
+     the local network. Cleartext is permitted because the daemon's RPC has no
+     TLS. This is acceptable ONLY on a trusted LAN; never expose those RPC
+     ports to the public internet. -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true" />
+</network-security-config>

@@ -1,0 +1,6 @@
+# build artifacts
+librimekeygen.a
+obj/
+obj-lib/
+test_keygen
+*.o

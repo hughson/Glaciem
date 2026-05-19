@@ -1,0 +1,6 @@
+# compiled binaries
+lattice_ref
+metal_check
+metal_miner
+pc_miner
+*.metallib
