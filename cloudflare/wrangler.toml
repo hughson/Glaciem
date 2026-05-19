@@ -1,0 +1,3 @@
+name = "glaciem-rpc"
+main = "glaciem-rpc-worker.js"
+compatibility_date = "2026-05-19"
