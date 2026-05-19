@@ -729,7 +729,7 @@ static void paint(HWND hwnd) {
     int blocked = !running && !has_mining_address();
     COLORREF fill = blocked?C_CARD:(running?C_RED:C_AMBER);
     COLORREF tc   = blocked?C_DIM:(running?C_WHITE:C_BG);
-    const char *t = blocked?"GENERATE AN ADDRESS TO MINE"
+    const char *t = blocked?"NEW WALLET OR RESTORE SEED FIRST"
                            :(running?"STOP":"START MINING");
     draw_button(dc,&R_MINE,fill,t,blocked?g_fSmall:g_fMid,tc);
   }
