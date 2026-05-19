@@ -8,7 +8,7 @@ lead is largest.
 This guide covers building the daemon and the miner apps, the changes made when
 forking from Monero, and running a local testnet.
 
-- Repo: `github.com/hughson/rime`, branch **`rime`**.
+- Repo: `github.com/hughson/Glaciem`, branch **`rime`**.
 - Based on Monero v0.18.x. The `rime` branch has a squashed history (a clean
   root commit); the `upstream` remote still points at `monero-project/monero`
   for reference.
