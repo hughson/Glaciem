@@ -479,7 +479,12 @@ namespace cryptonote
   {
     if(!m_p2p.get_payload_object().is_synchronized())
     {
-      return false;
+      // Glaciem fork bootstrap: serve RPC once the node has caught up to the
+      // highest height it knows of, even before the sync flag flips. On a
+      // pristine low-height chain no peer is ahead, so the flag would never
+      // flip and get_block_template would deadlock forever.
+      if(m_core.get_current_blockchain_height() < m_core.get_target_blockchain_height())
+        return false;
     }
     return true;
   }
