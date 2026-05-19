@@ -797,7 +797,7 @@ private struct StartButton: View {
             if blocked { return }
             running ? miner_stop() : miner_start()
         }) {
-            Text(blocked ? "GENERATE A WALLET TO MINE"
+            Text(blocked ? "SET UP A WALLET IN HOST"
                          : (running ? "STOP" : "START MINING"))
                 .font(.system(size: 15, weight: .heavy, design: .rounded))
                 .foregroundColor(blocked ? dimText : (running ? .white : bg))
