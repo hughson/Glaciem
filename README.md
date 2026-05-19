@@ -128,10 +128,24 @@ and sending a test transaction between two wallets.
 
 ## Known issues
 
-- Two Monero networking **unit tests** (`boosted_tcp_server.shutdown` and
-  `node_server.bind_same_p2p_port`) fail on macOS/arm64. These are
-  test-harness issues — the daemon itself runs and shuts down cleanly. They are
-  inherited from upstream and tracked for a later fix.
+The inherited Monero **unit-test suite** has ~34 failing tests (1227 of ~1261
+pass). They fall into two groups, and neither is a daemon defect:
+
+- **Fork-identity fixture mismatches (~27 tests)** — `uri.*`, `multisig.make_*`,
+  `get_account_address_*`, `wallet_storage.*`, `Serialization.portability_wallet`.
+  These upstream tests hardcode *Monero's* addresses and genesis block. Glaciem
+  deliberately changed the address prefix (Glaciem addresses begin with `R`) and
+  minted a fresh genesis, so the tests fail — the code is correct; the test
+  fixtures still describe Monero. Re-pointing them at Glaciem's identity is
+  tracked as post-fork cleanup.
+- **macOS/arm64 networking/concurrency test-harness issues (~7 tests)** —
+  `boosted_tcp_server.shutdown` and `cryptonote_protocol_handler.race_condition`
+  hang; `node_server.bind_same_p2p_port`, `http_server.*`, and `notify.works`
+  fail (the last needs a test helper binary). Inherited from upstream; the
+  daemon itself binds, runs, and shuts down cleanly.
+
+Address handling, wallet storage/restore, RPC, and mining are all exercised
+directly by the running daemon and the miner apps, independent of these tests.
 
 ## License
 
