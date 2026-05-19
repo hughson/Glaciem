@@ -4,10 +4,15 @@ A privacy-focused cryptocurrency forked from
 [Monero](https://github.com/monero-project/monero), with an original
 CPU-only proof-of-work (**Lattice**) and a Mac-first toolchain.
 
-> **Status: pre-mainnet — testnet only.**
-> "Glaciem" / "GLAC" are working names, pending a final trademark check.
-> There is no mainnet, no public network, and no released software. Nothing
-> here can hold real funds — please don't try.
+> **Status: mainnet launches 2026-05-20, 00:00 EDT** — a fair start: no
+> premine, everyone mines from block 1. Native miner + wallet apps for macOS,
+> Windows, and Android are on the
+> [Releases page](https://github.com/hughson/Glaciem/releases).
+>
+> Glaciem is an experimental project, not an investment — GLAC has no exchange
+> listing and no market price. Lattice has **not** had external cryptographic
+> review; mine at your own risk. "Glaciem" / "GLAC" are working names, pending
+> a trademark check.
 
 ## What Glaciem is
 
@@ -32,12 +37,12 @@ no GPU, validates a block by running one walk and checking the result. Lattice
 is integer-only and deterministic, a hard requirement for a consensus
 algorithm.
 
-On the testnet, Lattice is live: it is the consensus proof-of-work at
-hard-fork **v18**, and the daemon mines and validates Lattice blocks today.
+Lattice is the live consensus proof-of-work at hard-fork **v18** — the daemon
+mines and validates Lattice blocks on the Glaciem network.
 
-> ⚠️ **Lattice is experimental.** Its parameters are provisional and it has
-> **not** had external cryptographic review. That review is a hard prerequisite
-> before any mainnet launch — until then Lattice is strictly testnet-only.
+> ⚠️ **Lattice is experimental** and has **not** had external cryptographic
+> review. Its parameters are still provisional. Glaciem is a project, not an
+> investment — mine at your own risk.
 
 The design notes and the strategy behind it are in
 [`POW_DESIGN.md`](POW_DESIGN.md); the canonical algorithm is
@@ -54,7 +59,9 @@ show balance, and send / receive / sweep / view transaction history:
 - **Windows** — a self-contained `.exe`, cross-built from macOS ([`pow/app_win/`](pow/app_win)).
 - **Android** — a Jetpack Compose app ([`android/`](android)).
 
-All three run the same CPU-only Lattice miner.
+All three run the same CPU-only Lattice miner. Download them from the
+[Releases page](https://github.com/hughson/Glaciem/releases) or
+[glaciem.frostmine.workers.dev](https://glaciem.frostmine.workers.dev).
 
 ## Forked from
 
@@ -77,7 +84,7 @@ renamed binaries (`rimed`, `rime-wallet-cli`, `rime-wallet-rpc`).
 
 **Phase 2 — the Lattice proof-of-work**: an original CPU-only PoW, designed,
 implemented (a C reference plus the daemon's consensus copy), and integrated
-into the daemon at hard-fork v18 — which the testnet runs today.
+into the daemon at hard-fork v18 — live on the network.
 
 Exact file/line changes for Phase 1 are in [`SETUP.md`](SETUP.md).
 
@@ -106,15 +113,15 @@ and sending a test transaction between two wallets.
 
 ## Roadmap
 
-- ☑ **Phase 1** — clean fork: builds, runs a testnet, mines, sends RingCT
-  transactions, rebranded network identity.
-- ◑ **Phase 2** — the Lattice PoW: an original CPU-only proof-of-work,
-  designed, built, integrated at HF v18, running on the testnet, with native
-  macOS and Android miners. *In progress — parameters are still being tuned.*
-- ☐ **External cryptographic review of Lattice** — the hard gate. A novel
-  consensus algorithm must be reviewed by cryptographers before real value
-  depends on it.
-- ☐ **Mainnet launch** — only after review, with bootstrap-window protections.
+- ☑ **Phase 1** — clean fork: builds, runs, mines, sends RingCT transactions,
+  rebranded network identity.
+- ☑ **Phase 2** — the Lattice PoW: an original CPU-only proof-of-work,
+  designed, built, and integrated at HF v18, with native macOS, Windows, and
+  Android miners.
+- ☑ **Mainnet launch** — 2026-05-20, with bootstrap-window protections.
+- ☐ **External cryptographic review of Lattice** — strongly wanted; a novel
+  consensus algorithm deserves cryptographer review. Until then, mine at your
+  own risk.
 - ☐ **Masternodes** — a planned incentive layer for node operators: lock
   collateral and earn a share of the block reward, to reward and grow the
   full-node network beyond miners and volunteers.
