@@ -1954,6 +1954,17 @@ namespace cryptonote
       return false;
     }
 
+    // Glaciem: refuse to hand out mining templates before the public launch
+    // instant. Pre-launch the chain is stuck at difficulty 1, so miners would
+    // "find" a block on the first nonce and hammer the node in a tight loop --
+    // a connection storm. Gating it here keeps the node idle until launch.
+    if((uint64_t)time(NULL) < GLACIEM_LAUNCH_TIMESTAMP)
+    {
+      error_resp.code = CORE_RPC_ERROR_CODE_CORE_BUSY;
+      error_resp.message = "Glaciem mainnet has not launched yet";
+      return false;
+    }
+
     if(req.reserve_size > 255)
     {
       error_resp.code = CORE_RPC_ERROR_CODE_TOO_BIG_RESERVE_SIZE;
