@@ -79,8 +79,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
 
         rpc = RpcClient()
-        loadSettings()
         engine = MinerEngine(rpc)
+        loadSettings()                 // touches engine.setMiningMode -- must run after engine init
 
         // re-open the embedded wallet if one was already generated
         if (java.io.File(walletPath() + ".keys").exists()) {
