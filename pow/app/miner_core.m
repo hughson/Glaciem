@@ -41,8 +41,12 @@ static MinerStats      g_stats;
 static char            g_device[64]   = "-";
 static char            g_lasthash[65] = "";
 static char            g_wallet_addr[160] = "";   /* embedded wallet's address */
-static char            g_node_host[128]   = "46.225.125.197";  /* wallet's rimed node */
-static int             g_node_port        = 19081;        /* rimed RPC port  */
+/* Wallet RPC goes through the Cloudflare proxy (same path as the miner). The
+   Worker fails over between nodes, so a Hetzner traffic-scrub on one VM
+   doesn't take the wallet offline. wallet2 connects over TLS on :443 via
+   its e_ssl_support_autodetect default. */
+static char            g_node_host[128]   = "glaciem-rpc.frostmine.workers.dev";
+static int             g_node_port        = 443;
 static char            g_wallet_path[1024]= "";   /* embedded wallet file path */
 static RimeWallet   *g_wallet           = NULL; /* embedded wallet handle    */
 

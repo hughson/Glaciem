@@ -10,9 +10,11 @@ import java.net.URL
  * Ports the exact calls used by pow/app/miner_core.m.
  */
 class RpcClient {
-    // nodeHost/nodePort are the embedded wallet's daemon (direct to the node).
-    @Volatile var nodeHost: String = "46.225.125.197"
-    @Volatile var nodePort: Int = 19081
+    // nodeHost/nodePort are the embedded wallet's daemon. Points at the
+    // Cloudflare proxy so the wallet rides the same failover the miner does;
+    // wallet2 picks up TLS on :443 via its e_ssl_support_autodetect default.
+    @Volatile var nodeHost: String = "glaciem-rpc.frostmine.workers.dev"
+    @Volatile var nodePort: Int = 443
     @Volatile var walletHost: String = "46.225.125.197"
     @Volatile var walletPort: Int = 29083
 

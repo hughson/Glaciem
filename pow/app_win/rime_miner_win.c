@@ -30,12 +30,18 @@
 /* =====================================================================
  * Daemon: JSON-RPC over WinHTTP
  * ===================================================================== */
-#define NODE_PORT   19081
+/* Wallet RPC goes through the Cloudflare proxy (same path as the miner). The
+   Worker fails over between nodes, so a Hetzner traffic-scrub on one VM
+   doesn't take the wallet offline. wallet2 connects over TLS on :443 via
+   its e_ssl_support_autodetect default. NODE_PORT only affects the wallet
+   daemon string -- http_post() ignores its port argument and always hits the
+   Worker on HTTPS. */
+#define NODE_PORT   443
 #define WALLET_FILE "rimewallet"       /* wallet files, next to the .exe */
 
-/* LAN/public address of the machine running rimed. Override with a
-   command-line argument or a rime_host.txt file next to the .exe. */
-static char g_host[64] = "46.225.125.197";
+/* Default daemon host -- the Cloudflare proxy. Override with a command-line
+   argument or a rime_host.txt file next to the .exe. */
+static char g_host[64] = "glaciem-rpc.frostmine.workers.dev";
 
 static void load_host(LPSTR cmd) {
   char tmp[64] = {0};

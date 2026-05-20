@@ -126,6 +126,16 @@ class MainActivity : ComponentActivity() {
 
     private fun loadSettings() {
         val p = getSharedPreferences("rime", Context.MODE_PRIVATE)
+        // Upgrade users who saved the v1.0.0 direct-to-VM defaults. The wallet
+        // now talks to the Cloudflare proxy so it benefits from node failover.
+        // If the user customised the host, leave it alone.
+        if (p.getString("nodeHost", null) == "46.225.125.197"
+            && p.getInt("nodePort", 0) == 19081) {
+            p.edit()
+                .putString("nodeHost", "glaciem-rpc.frostmine.workers.dev")
+                .putInt("nodePort", 443)
+                .apply()
+        }
         rpc.nodeHost = p.getString("nodeHost", rpc.nodeHost) ?: rpc.nodeHost
         rpc.nodePort = p.getInt("nodePort", rpc.nodePort)
     }

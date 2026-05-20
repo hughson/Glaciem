@@ -25,6 +25,17 @@ private let dimText = Color.white.opacity(0.42)
 
 @main
 struct RimeMinerApp: App {
+    init() {
+        // Upgrade users who saved the v1.0.0 direct-to-VM defaults. The
+        // wallet now talks to the Cloudflare proxy so it benefits from
+        // node failover; if the user customised the host, leave it alone.
+        let ud = UserDefaults.standard
+        if ud.string(forKey: "nodeHost") == "46.225.125.197"
+           && (ud.object(forKey: "nodePort") as? Int) == 19081 {
+            ud.set("glaciem-rpc.frostmine.workers.dev", forKey: "nodeHost")
+            ud.set(443, forKey: "nodePort")
+        }
+    }
     var body: some Scene {
         WindowGroup("Glaciem Miner") {
             ContentView().frame(width: 460, height: 880)
@@ -83,8 +94,8 @@ struct ContentView: View {
     @State private var walletAddrFull  = ""
     @State private var walletConnected = false
     @State private var balanceStr      = "0.000000"
-    @State private var nodeHost = UserDefaults.standard.string(forKey: "nodeHost") ?? "46.225.125.197"
-    @State private var nodePort = (UserDefaults.standard.object(forKey: "nodePort") as? Int) ?? 19081
+    @State private var nodeHost = UserDefaults.standard.string(forKey: "nodeHost") ?? "glaciem-rpc.frostmine.workers.dev"
+    @State private var nodePort = (UserDefaults.standard.object(forKey: "nodePort") as? Int) ?? 443
     @State private var showSettings = false
 
     private let tick = Timer.publish(every: 0.12, on: .main, in: .common).autoconnect()
@@ -268,7 +279,7 @@ private struct SettingsSheet: View {
             }.buttonStyle(.plain)
             Button(action: {
                 let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
-                onSave(h.isEmpty ? "46.225.125.197" : h, Int(port) ?? 19081)
+                onSave(h.isEmpty ? "glaciem-rpc.frostmine.workers.dev" : h, Int(port) ?? 443)
             }) {
                 Text("SAVE")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
