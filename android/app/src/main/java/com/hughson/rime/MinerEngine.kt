@@ -7,6 +7,11 @@ import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import kotlin.random.Random
 
+/** Mining intensity selector -- how many cores the miner uses per batch.
+ *  ECO = quiet & cool (1 core), BALANCED = compromise (half cores),
+ *  MAX = full hashrate (all cores). Persisted in SharedPreferences. */
+enum class MiningMode { ECO, BALANCED, MAX }
+
 /** Snapshot of miner + wallet state for the UI. Mirrors MinerStats in miner_core.h. */
 data class MinerStats(
     val running: Boolean = false,
@@ -44,8 +49,20 @@ class MinerEngine(private val rpc: RpcClient) {
     private var minerThread: Thread? = null
     private var walletThread: Thread? = null
 
-    private val cores = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
-    private val pool = Executors.newFixedThreadPool(cores)
+    private val maxCores = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
+    private val pool = Executors.newFixedThreadPool(maxCores)
+
+    // Mining intensity -- read at the top of each batch so a mode switch takes
+    // effect within ~1 batch (sub-second). Idle pool threads in ECO/BALANCED
+    // cost effectively nothing.
+    @Volatile private var miningMode: MiningMode = MiningMode.MAX
+    private fun activeCores(): Int = when (miningMode) {
+        MiningMode.ECO      -> 1
+        MiningMode.BALANCED -> ((maxCores + 1) / 2).coerceAtLeast(1)
+        MiningMode.MAX      -> maxCores
+    }
+    fun setMiningMode(m: MiningMode) { miningMode = m }
+    fun getMiningMode(): MiningMode = miningMode
 
     // mining stats (written by the miner thread)
     @Volatile private var daemonConnected = false
@@ -204,7 +221,7 @@ class MinerEngine(private val rpc: RpcClient) {
         var curSeed = ByteArray(0)
         val rnd = Random(System.nanoTime())
         var prevDaemon = -1
-        android.util.Log.i(TAG, "mining started ($cores threads)")
+        android.util.Log.i(TAG, "mining started (mode=$miningMode, ${activeCores()}/$maxCores threads)")
 
         while (running) {
             // mine to the embedded wallet's own address. No fallback -- with no
@@ -261,11 +278,14 @@ class MinerEngine(private val rpc: RpcClient) {
                 curSeed = epochSeed
             }
 
-            // one parallel batch: each core hashes CHUNK contiguous nonces
+            // one parallel batch: `n` cores hash CHUNK contiguous nonces each.
+            // Snapshot `n` once so task fan-out and hashesThisBatch stay in sync
+            // if the mode changes mid-batch.
+            val n = activeCores()
             val base = rnd.nextInt().toLong() and 0xFFFFFFFFL
             val lastHashBuf = ByteArray(32)
             val t0 = System.nanoTime()
-            val tasks = (0 until cores).map { idx ->
+            val tasks = (0 until n).map { idx ->
                 Callable {
                     val lh = ByteArray(32)
                     val bb = intArrayOf(bestBits)
@@ -283,7 +303,7 @@ class MinerEngine(private val rpc: RpcClient) {
             }
 
             val dt = (System.nanoTime() - t0) / 1e9
-            val hashesThisBatch = CHUNK.toLong() * cores
+            val hashesThisBatch = CHUNK.toLong() * n
             totalHashes += hashesThisBatch
             val inst = if (dt > 0.0) hashesThisBatch / dt else 0.0
             hashrate = if (hashrate <= 0.0) inst else 0.7 * hashrate + 0.3 * inst
