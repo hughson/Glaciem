@@ -322,8 +322,10 @@ class MinerEngine(private val rpc: RpcClient) {
     companion object {
         private const val TAG = "Rime"
 
-        /** nonces hashed per core per batch */
-        private const val CHUNK = 2
+        /** nonces hashed per core per batch. Matches the Windows miner's value;
+         *  small enough to keep UI updates responsive, large enough to amortise
+         *  the pool's invokeAll() barrier across many hashes. */
+        private const val CHUNK = 64
 
         /** Offset of the 4-byte nonce in a block blob: 3 leading varints
          *  (major, minor, timestamp) + 32-byte prev_id. From miner_core.m. */
