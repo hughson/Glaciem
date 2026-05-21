@@ -20,6 +20,8 @@ int main(int argc, char *argv[]) {
 
     QQmlApplicationEngine qml;
     qml.rootContext()->setContextProperty("MinerEngine", &engine);
+    qml.rootContext()->setContextProperty(
+        "GlaciemVersion", QString::fromUtf8(GLACIEM_VERSION));
     qml.load(QUrl(QStringLiteral("qrc:/qml/Main.qml")));
     if (qml.rootObjects().isEmpty()) return -1;
 

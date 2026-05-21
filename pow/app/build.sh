@@ -6,6 +6,8 @@ REPO="$(cd ../.. && pwd)"
 
 APP="Glaciem Miner.app"
 BIN="RimeMiner"
+VERSION="$(cat "$REPO/VERSION" | tr -d '[:space:]')"
+echo "Glaciem version: $VERSION"
 
 echo "[1/7] building keygen library (Rime's real crypto)..."
 ../keygen/build_macos_lib.sh
@@ -52,6 +54,9 @@ rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 mv "$BIN" "$APP/Contents/MacOS/$BIN"
 cp Info.plist "$APP/Contents/Info.plist"
+# stamp the version from the repo-root VERSION file into Info.plist
+/usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString $VERSION" "$APP/Contents/Info.plist"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $VERSION"            "$APP/Contents/Info.plist"
 [ -f AppIcon.icns ] || ./make_icon.sh
 cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 

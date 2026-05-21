@@ -777,7 +777,12 @@ static void paint(HWND hwnd) {
 
   /* header */
   draw_text(dc,"GLACIEM",28,16,DW-56,g_fTitle,C_AMBER,DT_LEFT);
-  draw_text(dc,"PROOF-OF-WORK MINER",30,54,DW-60,g_fSmall,C_DIM,DT_LEFT);
+  {
+    char subtitle[64];
+    snprintf(subtitle, sizeof subtitle, "PROOF-OF-WORK MINER  \xB7  v%s",
+             GLACIEM_VERSION);
+    draw_text(dc,subtitle,30,54,DW-60,g_fSmall,C_DIM,DT_LEFT);
+  }
   draw_button(dc,&R_HOST,C_BTN,"HOST",g_fSmall,C_AMBER);
 
   /* hashrate card */

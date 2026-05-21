@@ -9,12 +9,17 @@ android {
     compileSdk = 36
     ndkVersion = "27.2.12479018"
 
+    // Read the project version from the repo-root VERSION file so all four
+    // platforms (Mac/Win/Android/Linux) share one source of truth per release.
+    val glaciemVersion = rootProject.file("../VERSION").readText().trim()
+
     defaultConfig {
         applicationId = "com.hughson.rime"
         minSdk = 26
         targetSdk = 36
         versionCode = 1
-        versionName = "1.0"
+        versionName = glaciemVersion
+        buildConfigField("String", "GLACIEM_VERSION", "\"$glaciemVersion\"")
 
         ndk { abiFilters += "arm64-v8a" }
 
@@ -46,7 +51,10 @@ android {
     }
     kotlinOptions { jvmTarget = "17" }
 
-    buildFeatures { compose = true }
+    buildFeatures {
+        compose = true
+        buildConfig = true   // enable BuildConfig.GLACIEM_VERSION
+    }
 }
 
 dependencies {

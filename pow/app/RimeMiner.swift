@@ -37,7 +37,7 @@ struct RimeMinerApp: App {
         }
     }
     var body: some Scene {
-        WindowGroup("Glaciem Miner") {
+        WindowGroup("Glaciem Miner  ·  v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")") {
             ContentView().frame(width: 460, height: 880)
         }
         .windowResizability(.contentSize)
@@ -181,7 +181,7 @@ private struct HeaderView: View {
                 Text("GLACIEM")
                     .font(.system(size: 26, weight: .heavy, design: .rounded))
                     .foregroundColor(amber)
-                Text("PROOF-OF-WORK MINER")
+                Text("PROOF-OF-WORK MINER  ·  v\(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?")")
                     .font(.system(size: 10, weight: .semibold, design: .monospaced))
                     .foregroundColor(dimText)
                     .tracking(2)

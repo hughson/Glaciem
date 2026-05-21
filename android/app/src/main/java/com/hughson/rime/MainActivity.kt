@@ -276,7 +276,8 @@ private fun Header(
         Column {
             Text("GLACIEM", color = amber, fontSize = 26.sp, fontWeight = FontWeight.Black)
             Text(
-                "PROOF-OF-WORK MINER", color = dim, fontFamily = mono,
+                "PROOF-OF-WORK MINER  ·  v${BuildConfig.GLACIEM_VERSION}",
+                color = dim, fontFamily = mono,
                 fontSize = 10.sp, fontWeight = FontWeight.SemiBold,
             )
         }

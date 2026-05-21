@@ -22,6 +22,8 @@ CXX=${CXX:-x86_64-w64-mingw32-g++}
 REPO=../..
 BW=$REPO/build-win
 DEP=$REPO/contrib/depends/x86_64-w64-mingw32
+VERSION="$(cat "$REPO/VERSION" | tr -d '[:space:]')"
+echo "Glaciem version: $VERSION"
 
 INC="-I$REPO/src -I$REPO/src/crypto -I$REPO/contrib/epee/include -I$REPO/external -I$REPO/external/easylogging++ -I$DEP/include"
 
@@ -36,7 +38,9 @@ echo "[2/3] compiling rime_miner_win.c + icon resource..."
 # auto-vectorised 16-word block mixing that the SSE2 baseline cannot do. AVX2 is
 # a safe baseline for any x86 CPU since ~2013/2015 -- for a wider public release,
 # switch to runtime CPU dispatch instead of a hard AVX2 requirement.
-$CC -O3 -Wall -Wno-unused-parameter -mavx2 -mbmi2 -funroll-loops -c rime_miner_win.c -o winobj/rime_miner_win.o
+$CC -O3 -Wall -Wno-unused-parameter -mavx2 -mbmi2 -funroll-loops \
+    -DGLACIEM_VERSION="\"$VERSION\"" \
+    -c rime_miner_win.c -o winobj/rime_miner_win.o
 ${WINDRES:-x86_64-w64-mingw32-windres} -i rime.rc -o winobj/rime_res.o
 
 echo "[3/3] linking Glaciem Miner.exe (static -- single self-contained .exe)..."

@@ -43,7 +43,7 @@ Window {
                 spacing: 2
                 Text { text: "GLACIEM"; color: amber
                     font { family: monoFamily; pixelSize: 28; bold: true; letterSpacing: 4 } }
-                Text { text: "PROOF-OF-WORK MINER"; color: dim
+                Text { text: "PROOF-OF-WORK MINER  ·  v" + GlaciemVersion; color: dim
                     font { family: monoFamily; pixelSize: 10; letterSpacing: 1.8 } }
             }
             Item { Layout.fillWidth: true }

@@ -38,6 +38,12 @@ get_target_property(BOOST_INC Boost::headers INTERFACE_INCLUDE_DIRECTORIES)
 
 # ---- locate the Monero wallet build that's already on disk ---------------
 get_filename_component(REPO_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../.." ABSOLUTE)
+
+# Read the project version from the repo-root VERSION file (single source of
+# truth shared with the Mac/Win/Android builds).
+file(READ "${REPO_ROOT}/VERSION" GLACIEM_VERSION)
+string(STRIP "${GLACIEM_VERSION}" GLACIEM_VERSION)
+message(STATUS "Glaciem version: ${GLACIEM_VERSION}")
 if(NOT MONERO_BUILD)
     if(EXISTS "${REPO_ROOT}/build/release/lib/libwallet_api.a")
         set(MONERO_BUILD "${REPO_ROOT}/build/release")
@@ -78,7 +84,10 @@ add_executable(glaciem-miner
     "${REPO_ROOT}/pow/keygen/rime_keygen.cpp"
     resources.qrc
 )
-target_compile_definitions(glaciem-miner PRIVATE LATTICE_NO_MAIN)
+target_compile_definitions(glaciem-miner PRIVATE
+    LATTICE_NO_MAIN
+    GLACIEM_VERSION="${GLACIEM_VERSION}"
+)
 target_include_directories(glaciem-miner PRIVATE
     "${REPO_ROOT}/pow/wallet"
     "${REPO_ROOT}/pow/keygen"
