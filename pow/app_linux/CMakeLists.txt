@@ -74,6 +74,7 @@ add_executable(glaciem-miner
     miner_engine.cpp
     "${REPO_ROOT}/pow/lattice_ref.c"
     "${REPO_ROOT}/pow/wallet/rime_wallet.cpp"
+    "${REPO_ROOT}/pow/wallet/peer_cache.c"
     "${REPO_ROOT}/pow/keygen/rime_keygen.cpp"
     resources.qrc
 )

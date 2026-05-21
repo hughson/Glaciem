@@ -1,5 +1,6 @@
 package com.hughson.rime
 
+import android.content.Context
 import org.json.JSONArray
 import org.json.JSONObject
 import java.net.HttpURLConnection
@@ -9,7 +10,7 @@ import java.net.URL
  * JSON-RPC client for rimed (node) and rime-wallet-rpc (wallet).
  * Ports the exact calls used by pow/app/miner_core.m.
  */
-class RpcClient {
+class RpcClient(context: Context) {
     // nodeHost/nodePort are the embedded wallet's daemon. Points at the
     // Cloudflare proxy so the wallet rides the same failover the miner does;
     // wallet2 picks up TLS on :443 via its e_ssl_support_autodetect default.
@@ -18,24 +19,69 @@ class RpcClient {
     @Volatile var walletHost: String = "46.225.125.197"
     @Volatile var walletPort: Int = 29083
 
-    // Miner-RPC endpoints, tried in order. The Cloudflare Worker is primary
-    // (it absorbs the connection storm a difficulty-1 miner produces); the
-    // direct-node URLs are pure resilience fallbacks for when the Worker is
-    // unreachable (rate-limited, CF outage, etc.) so the network keeps mining.
-    private val minerEndpoints = listOf(
-        "https://glaciem-rpc.frostmine.workers.dev/json_rpc",
-        "http://static.197.125.225.46.clients.your-server.de:19081/json_rpc",
-        "http://static.34.142.105.178.clients.your-server.de:19081/json_rpc",
-    )
+    // Shared peer cache (seeds + discovered peers, persisted across launches).
+    // Both the miner-RPC path here AND the wallet failover in MinerEngine
+    // snapshot from this cache.
+    val peerCache = PeerCache(context).apply {
+        // The Cloudflare Worker stays primary -- absorbs the connection storm
+        // a difficulty-1 miner produces. The direct-node hostnames are seed
+        // fallbacks for when the Worker is unreachable.
+        addSeed("glaciem-rpc.frostmine.workers.dev", 443, useSsl = true)
+        addSeed("static.197.125.225.46.clients.your-server.de", 19081, useSsl = false)
+        addSeed("static.34.142.105.178.clients.your-server.de", 19081, useSsl = false)
+    }
+
     private fun walletUrl() = "http://$walletHost:$walletPort/json_rpc"
 
-    /** POST a JSON-RPC request to the first reachable miner endpoint. */
+    /** POST a JSON-RPC request via the peer cache: snapshot, try in order,
+     *  update scores, opportunistically call /get_peer_list. */
     private fun callAny(method: String, params: Any?): JSONObject? {
-        for (url in minerEndpoints) {
+        for (peer in peerCache.snapshot()) {
+            val scheme = if (peer.useSsl) "https" else "http"
+            val url = "$scheme://${peer.host}:${peer.port}/json_rpc"
+            val t0 = System.currentTimeMillis()
             val r = call(url, method, params)
-            if (r != null) return r
+            val latency = (System.currentTimeMillis() - t0).toInt()
+            if (r != null) {
+                peerCache.markSuccess(peer.host, peer.port, latency)
+                tryDiscoverPeers(peer)
+                return r
+            }
+            peerCache.markFailure(peer.host, peer.port)
         }
         return null
+    }
+
+    /** After a successful RPC, occasionally ask the working node for its
+     *  peer list; add any peers advertising an rpc_port to the cache. */
+    private fun tryDiscoverPeers(source: Peer) {
+        if (!peerCache.shouldDiscover()) return
+        peerCache.resetDiscoveryCounter()
+        val scheme = if (source.useSsl) "https" else "http"
+        val url = "$scheme://${source.host}:${source.port}/get_peer_list"
+        try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5000
+                readTimeout = 6000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            conn.outputStream.use { it.write(ByteArray(0)) }
+            if (conn.responseCode != 200) { conn.disconnect(); return }
+            val text = conn.inputStream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            val white = JSONObject(text).optJSONArray("white_list") ?: return
+            var added = 0
+            for (i in 0 until white.length()) {
+                val p = white.optJSONObject(i) ?: continue
+                val host = p.optString("host")
+                val rpcPort = p.optInt("rpc_port", 0)
+                if (host.isEmpty() || rpcPort <= 0 || rpcPort > 65535) continue
+                peerCache.addDiscovered(host, rpcPort)
+                if (++added >= 4) break
+            }
+        } catch (_: Throwable) { /* discovery is best-effort */ }
     }
 
     /** POST a JSON-RPC request, return its `result` object (or null on failure). */

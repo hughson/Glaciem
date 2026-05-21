@@ -29,6 +29,7 @@ echo "[1/3] compiling keygen + embedded-wallet glue (C++)..."
 rm -rf winobj && mkdir winobj
 $CXX -O2 -std=c++17 $INC -c ../keygen/rime_keygen.cpp -o winobj/rime_keygen.o
 $CXX -O2 -std=c++17 $INC -c ../wallet/rime_wallet.cpp -o winobj/rime_wallet.o
+$CC  -O2 -c ../wallet/peer_cache.c -o winobj/peer_cache.o
 
 echo "[2/3] compiling rime_miner_win.c + icon resource..."
 # -O3 + AVX2/BMI2: the Lattice hash loop (lattice_ref.c is #included here) gets
@@ -84,7 +85,7 @@ DEP_LIBS="
   $DEP/lib/libhidapi.a
 "
 $CXX -O2 -mwindows -static \
-  winobj/rime_miner_win.o winobj/rime_keygen.o winobj/rime_wallet.o winobj/rime_res.o \
+  winobj/rime_miner_win.o winobj/rime_keygen.o winobj/rime_wallet.o winobj/peer_cache.o winobj/rime_res.o \
   -Wl,--start-group $MONERO_LIBS $DEP_LIBS -Wl,--end-group \
   -o "Glaciem Miner.exe" \
   -lwinhttp -lws2_32 -lwsock32 -liphlpapi -lcrypt32 -lbcrypt \

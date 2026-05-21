@@ -14,6 +14,7 @@ echo "[2/7] compiling Lattice PoW..."
 clang -c -O3 -funroll-loops -DLATTICE_NO_MAIN ../lattice_ref.c -o lattice.o
 
 echo "[3/7] compiling miner core (C / Objective-C, CPU-only)..."
+clang -c -O2 -I../wallet ../wallet/peer_cache.c -o peer_cache.o
 clang -c -fobjc-arc -O2 -I../keygen -I../wallet miner_core.m -o miner_core.o
 
 echo "[4/7] compiling embedded wallet (C ABI over Monero wallet_api)..."
@@ -36,7 +37,7 @@ done
 
 echo "[6/7] compiling SwiftUI app..."
 swiftc -O -swift-version 5 -parse-as-library \
-  RimeMiner.swift miner_core.o lattice.o rime_wallet.o \
+  RimeMiner.swift miner_core.o lattice.o rime_wallet.o peer_cache.o \
   "$REPO/build/release/lib/libwallet_api.a" \
   "${WALLET_LIBS[@]}" \
   ../keygen/librimekeygen.a -lc++ \
@@ -57,7 +58,7 @@ cp AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 echo "ad-hoc code signing..."
 codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign skipped)"
 
-rm -f miner_core.o lattice.o rime_wallet.o
+rm -f miner_core.o lattice.o rime_wallet.o peer_cache.o
 
 echo "installing to /Applications (so a stale copy can't crash on launch)..."
 rm -rf "/Applications/$APP"

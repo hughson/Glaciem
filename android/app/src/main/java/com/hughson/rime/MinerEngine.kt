@@ -179,15 +179,9 @@ class MinerEngine(private val rpc: RpcClient) {
         )
     }
 
-    // Wallet-side fallback daemon list. The wallet opens against the user's
-    // configured node (default = Cloudflare Worker). After several consecutive
-    // disconnects, swap to the next entry. Keys/balance/height survive the
-    // swap -- only the HTTP connection changes.
-    private val walletFallbacks = listOf(
-        "glaciem-rpc.frostmine.workers.dev:443",
-        "static.197.125.225.46.clients.your-server.de:19081",
-        "static.34.142.105.178.clients.your-server.de:19081",
-    )
+    // Wallet failover uses the same peer cache as the miner (via
+    // rpc.peerCache). After N consecutive disconnects, snapshot the cache
+    // and rotate to the next entry. Seeds first, discovered peers second.
     private val walletFailoverThreshold = 3
 
     private fun walletLoop() {
@@ -216,12 +210,17 @@ class MinerEngine(private val rpc: RpcClient) {
                     targetHeight  = WalletNative.daemonHeight(h)
                     walletSyncing = walletOk && !WalletNative.isSynchronized(h)
                     WalletNative.store(h)                 // persist so balance survives a relaunch
-                    // failover: after N consecutive disconnects, swap to next endpoint
+                    // failover: after N consecutive disconnects, snapshot the
+                    // shared peer cache and rotate to the next entry
                     if (walletOk) {
                         disconnectCount = 0
                     } else if (++disconnectCount >= walletFailoverThreshold) {
-                        endpointIdx = (endpointIdx + 1) % walletFallbacks.size
-                        WalletNative.setDaemon(h, walletFallbacks[endpointIdx])
+                        val snap = rpc.peerCache.snapshot()
+                        if (snap.isNotEmpty()) {
+                            endpointIdx = (endpointIdx + 1) % snap.size
+                            val p = snap[endpointIdx]
+                            WalletNative.setDaemon(h, "${p.host}:${p.port}")
+                        }
                         disconnectCount = 0
                     }
                 } catch (e: Throwable) {

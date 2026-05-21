@@ -20,6 +20,7 @@
 #include "miner_core.h"
 #include "rime_keygen.h"        /* rime_generate_address */
 #include "rime_wallet.h"        /* embedded wallet (Monero wallet_api) */
+#include "peer_cache.h"         /* seed + discovered RPC endpoints */
 
 typedef uint64_t u64;
 typedef uint8_t  u8;
@@ -99,57 +100,113 @@ static NSDictionary *json_rpc_url(NSString *url, NSString *method, id params) {
   id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
   return [resp isKindOfClass:NSDictionary.class] ? resp[@"result"] : nil;
 }
-/* Miner-RPC endpoint list, tried in order. The Cloudflare Worker stays
-   primary -- it absorbs the connection storm a difficulty-1 miner produces,
-   so the nodes are never hit directly for mining and can't be traffic-scrubbed
-   off the public net during normal operation. The two direct-node fallbacks
-   exist solely for resilience: if the Worker is unreachable (rate-limited,
-   account issue, CF outage) the miner cycles through them so the network
-   keeps mining instead of going dark. */
-static NSArray<NSString *> *miner_endpoints(void) {
-  static NSArray<NSString *> *eps = nil;
+/* ---- peer cache (seeds + discovered) ---------------------------------- */
+/* The Cloudflare Worker stays primary -- it absorbs the connection storm a
+   difficulty-1 miner produces. The two direct-node hostnames are seed
+   fallbacks for when the Worker is unreachable. Additional peers are
+   discovered via get_peer_list and remembered across launches. */
+static PeerCache *g_peers = NULL;
+
+static int peers_load_cb(char *out, int cap, void *ctx) {
+  (void)ctx;
+  NSString *s = [[NSUserDefaults standardUserDefaults] stringForKey:@"peerCache"];
+  if (!s) return 0;
+  const char *c = s.UTF8String;
+  if (!c) return 0;
+  strncpy(out, c, cap - 1);
+  out[cap - 1] = 0;
+  return 1;
+}
+static void peers_save_cb(const char *json, void *ctx) {
+  (void)ctx;
+  if (!json) return;
+  [[NSUserDefaults standardUserDefaults]
+      setObject:[NSString stringWithUTF8String:json] forKey:@"peerCache"];
+}
+static void peers_init_once(void) {
   static dispatch_once_t once;
   dispatch_once(&once, ^{
-    eps = @[
-      @"https://glaciem-rpc.frostmine.workers.dev/json_rpc",
-      @"http://static.197.125.225.46.clients.your-server.de:19081/json_rpc",
-      @"http://static.34.142.105.178.clients.your-server.de:19081/json_rpc",
-    ];
+    g_peers = peer_cache_new(peers_load_cb, peers_save_cb, NULL);
+    peer_cache_add_seed(g_peers, "glaciem-rpc.frostmine.workers.dev", 443, 1);
+    peer_cache_add_seed(g_peers, "static.197.125.225.46.clients.your-server.de", 19081, 0);
+    peer_cache_add_seed(g_peers, "static.34.142.105.178.clients.your-server.de", 19081, 0);
   });
-  return eps;
 }
+
+/* Periodic peer discovery: hit /get_peer_list on a node that just answered,
+   extract peers that advertise an RPC port (i.e. --public-node operators),
+   add them to the cache for future fallback. */
+static void try_discover_peers(NSString *base_url) {
+  if (!peer_cache_should_discover(g_peers)) return;
+  /* base_url is the full /json_rpc URL; swap suffix for /get_peer_list */
+  NSString *pl_url =
+      [base_url stringByReplacingOccurrencesOfString:@"/json_rpc"
+                                          withString:@"/get_peer_list"];
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:pl_url]];
+  req.HTTPMethod = @"POST";
+  req.HTTPBody = [@"" dataUsingEncoding:NSUTF8StringEncoding];
+  req.timeoutInterval = 5;
+  __block NSData *out = nil;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [[[NSURLSession sharedSession] dataTaskWithRequest:req
+      completionHandler:^(NSData *d, NSURLResponse *r, NSError *e){
+        out = d; dispatch_semaphore_signal(sem);
+      }] resume];
+  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 6*NSEC_PER_SEC)))
+    return;
+  if (!out) return;
+  id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
+  if (![resp isKindOfClass:NSDictionary.class]) return;
+  NSArray *white = ((NSDictionary *)resp)[@"white_list"];
+  if (![white isKindOfClass:NSArray.class]) { peer_cache_reset_discovery_counter(g_peers); return; }
+  int added = 0;
+  for (NSDictionary *p in white) {
+    if (![p isKindOfClass:NSDictionary.class]) continue;
+    NSNumber *rpc_port = p[@"rpc_port"];
+    NSString *host     = p[@"host"];
+    if (![host isKindOfClass:NSString.class] || ![rpc_port isKindOfClass:NSNumber.class]) continue;
+    int rp = rpc_port.intValue;
+    if (rp <= 0 || rp > 65535) continue;   /* operator didn't run --public-node */
+    peer_cache_add_discovered(g_peers, host.UTF8String, rp);
+    if (++added >= 4) break;               /* cap per discovery */
+  }
+  peer_cache_reset_discovery_counter(g_peers);
+}
+
 static NSDictionary *json_rpc(NSString *method, id params) {
-  for (NSString *url in miner_endpoints()) {
+  peers_init_once();
+  PeerEntry snap[64];
+  int n = peer_cache_snapshot(g_peers, snap, 64);
+  for (int i = 0; i < n; i++) {
+    NSString *url = [NSString stringWithFormat:@"%s://%s:%d/json_rpc",
+                     snap[i].use_ssl ? "https" : "http", snap[i].host, snap[i].port];
+    double t0 = now_s();
     NSDictionary *r = json_rpc_url(url, method, params);
-    if (r) return r;
+    int latency_ms = (int)((now_s() - t0) * 1000);
+    if (r) {
+      peer_cache_mark_success(g_peers, snap[i].host, snap[i].port, latency_ms);
+      try_discover_peers(url);
+      return r;
+    }
+    peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
   }
   return nil;
 }
 
-/* Wallet-side fallback daemon list. The wallet opens against whatever node
-   the user has configured (defaults to the Cloudflare Worker). When refresh
-   can't reach it for several cycles, swap to the next entry. Same intent as
-   the miner-side fallback (json_rpc) but the wallet talks binary RPC, so
-   the swap path uses rime_wallet_set_daemon -> wallet2::set_daemon. */
-static NSArray<NSString *> *wallet_endpoints(void) {
-  static NSArray<NSString *> *eps = nil;
-  static dispatch_once_t once;
-  dispatch_once(&once, ^{
-    eps = @[
-      @"glaciem-rpc.frostmine.workers.dev:443",
-      @"static.197.125.225.46.clients.your-server.de:19081",
-      @"static.34.142.105.178.clients.your-server.de:19081",
-    ];
-  });
-  return eps;
-}
+/* Wallet failover uses the same peer cache as the miner -- when refresh
+   can't reach the current daemon for several cycles, snapshot the cache
+   and rotate to the next entry. Seeds always lead; discovered peers
+   follow them in score order. The swap goes through wallet2::set_daemon
+   (via rime_wallet_set_daemon) so keys/balance/scanned-height are
+   preserved across the swap. */
 #define WALLET_FAILOVER_THRESHOLD 3   /* consecutive disconnects before swap */
 
 /* ---- embedded-wallet poll: address + balance + sync state ---- */
 static void *wallet_poll(void *arg) {
   (void)arg;
+  peers_init_once();
   int disconnect_count = 0;
-  int endpoint_idx = 0;       /* index into wallet_endpoints() */
+  int endpoint_idx = 0;       /* index into the snapshot order */
   while (1) {
     RimeWallet *w;
     pthread_mutex_lock(&g_lock);
@@ -197,17 +254,22 @@ static void *wallet_poll(void *arg) {
       g_stats.wallet_syncing   = (conn && !synced) ? 1 : 0;
       pthread_mutex_unlock(&g_lock);
 
-      /* Failover: if the daemon is unreachable for several cycles in a row,
-         swap to the next entry in wallet_endpoints(). The wallet's keys,
-         balance, and scanned height are preserved across the swap -- only
-         the HTTP connection changes. */
+      /* Failover: after N consecutive disconnects, snapshot the peer
+         cache (seeds + discovered, in score order) and rotate to the
+         next entry. The wallet's keys, balance, and scanned height are
+         preserved across the swap -- only the HTTP connection changes. */
       if (conn) {
         disconnect_count = 0;
       } else if (++disconnect_count >= WALLET_FAILOVER_THRESHOLD) {
-        NSArray<NSString *> *eps = wallet_endpoints();
-        endpoint_idx = (endpoint_idx + 1) % (int)eps.count;
-        NSString *next = eps[endpoint_idx];
-        rime_wallet_set_daemon(w, next.UTF8String);
+        PeerEntry snap[64];
+        int n = peer_cache_snapshot(g_peers, snap, 64);
+        if (n > 0) {
+          endpoint_idx = (endpoint_idx + 1) % n;
+          char daemon[200];
+          snprintf(daemon, sizeof daemon, "%s:%d",
+                   snap[endpoint_idx].host, snap[endpoint_idx].port);
+          rime_wallet_set_daemon(w, daemon);
+        }
         disconnect_count = 0;
       }
     } else {

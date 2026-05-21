@@ -26,6 +26,12 @@
 #include "../lattice_ref.c"            /* lattice_build_dataset, lattice_hash_ds */
 #include "../keygen/rime_keygen.h"     /* rime_generate_address */
 #include "../wallet/rime_wallet.h"     /* embedded wallet (Monero wallet_api) */
+#include "../wallet/peer_cache.h"      /* seed + discovered RPC endpoints */
+
+/* Forward decls for the tiny JSON readers defined further down; the peer
+   discovery helper uses them before their definition. */
+static int  json_get_str(const char *json, const char *key, char *out, int outsz);
+static int  json_get_u64(const char *json, const char *key, uint64_t *out);
 
 /* =====================================================================
  * Daemon: JSON-RPC over WinHTTP
@@ -64,44 +70,72 @@ static void load_host(LPSTR cmd) {
   if (tmp[0]) snprintf(g_host,sizeof g_host,"%s",tmp);
 }
 
-/* Miner-RPC endpoint list, tried in order. The Cloudflare Worker is primary
-   (it absorbs the connection storm a difficulty-1 miner produces). The two
-   direct-node fallbacks exist for resilience: if the Worker is unreachable
-   -- rate-limited, account issue, CF outage -- the miner cycles through them
-   so the network keeps mining instead of going dark. */
-typedef struct {
-  const wchar_t *host;
-  INTERNET_PORT  port;
-  int            secure;  /* 1 = HTTPS, 0 = HTTP */
-} Endpoint;
-static const Endpoint g_endpoints[] = {
-  { L"glaciem-rpc.frostmine.workers.dev",            INTERNET_DEFAULT_HTTPS_PORT, 1 },
-  { L"static.197.125.225.46.clients.your-server.de", 19081, 0 },
-  { L"static.34.142.105.178.clients.your-server.de", 19081, 0 },
-};
-#define NUM_ENDPOINTS ((int)(sizeof g_endpoints / sizeof g_endpoints[0]))
+/* ---- peer cache: seeds + discovered peers, persisted to rime_peers.json
+   next to the .exe. Same cache feeds the miner-RPC path and the wallet
+   failover. Seeds are always present and tried first; discovered peers
+   come from periodic get_peer_list calls and survive across launches. ---- */
+static PeerCache *g_peers = NULL;
 
-/* POST `body` to a single endpoint; 1 = success, 0 = try the next one. */
-static int http_post_to(const Endpoint *ep, const char *body, char *resp, int resp_sz) {
+static int peers_load_cb(char *out, int cap, void *ctx) {
+  (void)ctx;
+  FILE *f = fopen("rime_peers.json", "rb");
+  if (!f) return 0;
+  size_t n = fread(out, 1, (size_t)cap - 1, f);
+  fclose(f);
+  out[n] = 0;
+  return n > 0;
+}
+static void peers_save_cb(const char *json, void *ctx) {
+  (void)ctx;
+  FILE *f = fopen("rime_peers.json", "wb");
+  if (!f) return;
+  fwrite(json, 1, strlen(json), f);
+  fclose(f);
+}
+static void peers_init_once(void) {
+  static volatile LONG initialized = 0;
+  if (InterlockedCompareExchange(&initialized, 1, 0) != 0) return;
+  g_peers = peer_cache_new(peers_load_cb, peers_save_cb, NULL);
+  peer_cache_add_seed(g_peers, "glaciem-rpc.frostmine.workers.dev", 443, 1);
+  peer_cache_add_seed(g_peers, "static.197.125.225.46.clients.your-server.de", 19081, 0);
+  peer_cache_add_seed(g_peers, "static.34.142.105.178.clients.your-server.de", 19081, 0);
+}
+
+/* Convert UTF-8 host -> UTF-16 for WinHttpConnect. Lifetime: caller owns
+   the returned buffer; pass it back to free_wide(). */
+static wchar_t *host_to_wide(const char *host) {
+  int n = MultiByteToWideChar(CP_UTF8, 0, host, -1, NULL, 0);
+  if (n <= 0) return NULL;
+  wchar_t *w = malloc(sizeof(wchar_t) * (size_t)n);
+  if (!w) return NULL;
+  MultiByteToWideChar(CP_UTF8, 0, host, -1, w, n);
+  return w;
+}
+static void free_wide(wchar_t *w) { free(w); }
+
+/* POST to a single endpoint at a specific path; 1 = success. */
+static int http_post_ep(const PeerEntry *ep, const wchar_t *path,
+                        const char *body, char *resp, int resp_sz) {
   int ok = 0;
+  wchar_t *whost = host_to_wide(ep->host);
+  if (!whost) return 0;
   HINTERNET hs = WinHttpOpen(L"RimeMiner/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
-  if (!hs) return 0;
+  if (!hs) { free_wide(whost); return 0; }
   WinHttpSetTimeouts(hs, 4000, 4000, 5000, 6000);
-  HINTERNET hc = WinHttpConnect(hs, ep->host, ep->port, 0);
+  HINTERNET hc = WinHttpConnect(hs, whost, (INTERNET_PORT)ep->port, 0);
   if (hc) {
-    DWORD flags = ep->secure ? WINHTTP_FLAG_SECURE : 0;
-    HINTERNET hr = WinHttpOpenRequest(hc, L"POST", L"/json_rpc", NULL,
+    DWORD flags = ep->use_ssl ? WINHTTP_FLAG_SECURE : 0;
+    HINTERNET hr = WinHttpOpenRequest(hc, L"POST", path, NULL,
         WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (hr) {
+      DWORD body_len = body ? (DWORD)strlen(body) : 0;
       if (WinHttpSendRequest(hr, L"Content-Type: application/json\r\n", (DWORD)-1,
-                             (void*)body, (DWORD)strlen(body),
-                             (DWORD)strlen(body), 0) &&
+                             (void*)body, body_len, body_len, 0) &&
           WinHttpReceiveResponse(hr, NULL)) {
         DWORD status = 0, slen = sizeof status;
         WinHttpQueryHeaders(hr, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
                             NULL, &status, &slen, NULL);
-        /* 4xx/5xx => fall through to the next endpoint (e.g. 429 rate-limit) */
         if (status >= 200 && status < 400) {
           int got = 0; DWORD avail = 0;
           while (WinHttpQueryDataAvailable(hr,&avail) && avail > 0) {
@@ -120,14 +154,56 @@ static int http_post_to(const Endpoint *ep, const char *body, char *resp, int re
     WinHttpCloseHandle(hc);
   }
   WinHttpCloseHandle(hs);
+  free_wide(whost);
   return ok;
 }
 
-/* Wrapper: try each endpoint in order until one succeeds. */
+/* Periodic peer discovery: ask the endpoint that just answered for its
+   peer list, add any peers advertising an rpc_port to the cache. */
+static void try_discover_peers(const PeerEntry *source) {
+  if (!peer_cache_should_discover(g_peers)) return;
+  char resp[16384] = {0};
+  if (!http_post_ep(source, L"/get_peer_list", "", resp, (int)sizeof resp)) {
+    peer_cache_reset_discovery_counter(g_peers);
+    return;
+  }
+  /* Hand-walk the white_list: {"host":"...","rpc_port":N,...} per entry. */
+  const char *p = strstr(resp, "\"white_list\"");
+  int added = 0;
+  while (p && added < 4) {
+    p = strstr(p, "{");
+    if (!p) break;
+    const char *end = strstr(p, "}");
+    if (!end) break;
+    char host[128] = {0};
+    int rpc_port = 0;
+    json_get_str(p, "host", host, (int)sizeof host);
+    uint64_t v = 0;
+    if (json_get_u64(p, "rpc_port", &v)) rpc_port = (int)v;
+    if (host[0] && rpc_port > 0 && rpc_port <= 65535) {
+      peer_cache_add_discovered(g_peers, host, rpc_port);
+      added++;
+    }
+    p = end + 1;
+  }
+  peer_cache_reset_discovery_counter(g_peers);
+}
+
+/* JSON-RPC: snapshot the cache, try endpoints in order, update scores. */
 static int http_post(int port, const char *body, char *resp, int resp_sz) {
   (void)port;
-  for (int i = 0; i < NUM_ENDPOINTS; i++) {
-    if (http_post_to(&g_endpoints[i], body, resp, resp_sz)) return 1;
+  peers_init_once();
+  PeerEntry snap[64];
+  int n = peer_cache_snapshot(g_peers, snap, 64);
+  for (int i = 0; i < n; i++) {
+    DWORD t0 = GetTickCount();
+    if (http_post_ep(&snap[i], L"/json_rpc", body, resp, resp_sz)) {
+      peer_cache_mark_success(g_peers, snap[i].host, snap[i].port,
+                               (int)(GetTickCount() - t0));
+      try_discover_peers(&snap[i]);
+      return 1;
+    }
+    peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
   }
   return 0;
 }
@@ -474,16 +550,8 @@ static unsigned __stdcall mine_thread(void *arg) {
   return 0;
 }
 
-/* Wallet-side fallback daemon list. The wallet opens against the configured
-   host (default: the Cloudflare Worker). If refresh can't reach it for several
-   cycles, swap to the next entry. Same intent as the miner-side endpoint
-   fallback. */
-static const char *const g_wallet_fallbacks[] = {
-  "glaciem-rpc.frostmine.workers.dev:443",
-  "static.197.125.225.46.clients.your-server.de:19081",
-  "static.34.142.105.178.clients.your-server.de:19081",
-};
-#define WALLET_NUM_FALLBACKS ((int)(sizeof g_wallet_fallbacks / sizeof g_wallet_fallbacks[0]))
+/* Wallet failover uses the same peer cache as the miner. Seeds first,
+   discovered peers second (sorted by score). */
 #define WALLET_FAILOVER_THRESHOLD 3
 
 /* embedded-wallet poll: owns g_wallet -- opens/recovers it, refreshes it,
@@ -491,6 +559,7 @@ static const char *const g_wallet_fallbacks[] = {
    lifetime so the wallet panel is live even while not mining. */
 static unsigned __stdcall wallet_thread(void *arg) {
   (void)arg;
+  peers_init_once();
   char daemon[96];
   snprintf(daemon,sizeof daemon,"%s:%d",g_host,NODE_PORT);
   int wallet_disconnects = 0, wallet_ep_idx = 0;
@@ -587,13 +656,20 @@ static unsigned __stdcall wallet_thread(void *arg) {
       snprintf(g_sh.wallet_addr,sizeof g_sh.wallet_addr,"%s",addr);
       LeaveCriticalSection(&g_sh.cs);
 
-      /* Failover: after N consecutive disconnects, swap to next endpoint.
-         Wallet keys/balance/height are preserved across the swap. */
+      /* Failover: after N consecutive disconnects, snapshot the peer
+         cache (seeds + discovered, in score order) and rotate. */
       if (conn) {
         wallet_disconnects = 0;
       } else if (++wallet_disconnects >= WALLET_FAILOVER_THRESHOLD) {
-        wallet_ep_idx = (wallet_ep_idx + 1) % WALLET_NUM_FALLBACKS;
-        rime_wallet_set_daemon(g_wallet, g_wallet_fallbacks[wallet_ep_idx]);
+        PeerEntry snap[64];
+        int n = peer_cache_snapshot(g_peers, snap, 64);
+        if (n > 0) {
+          wallet_ep_idx = (wallet_ep_idx + 1) % n;
+          char d[200];
+          snprintf(d, sizeof d, "%s:%d",
+                   snap[wallet_ep_idx].host, snap[wallet_ep_idx].port);
+          rime_wallet_set_daemon(g_wallet, d);
+        }
         wallet_disconnects = 0;
       }
     } else {

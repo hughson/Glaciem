@@ -27,6 +27,7 @@
 
 extern "C" {
 #include "rime_keygen.h"
+#include "peer_cache.h"
 // Lattice PoW (CPU-only) -- compiled as a separate unit (pow/lattice_ref.c).
 extern void lattice_build_dataset(const uint8_t epoch_seed[32], uint64_t *ds);
 extern void lattice_hash_ds(const uint8_t *in, size_t len, const uint64_t *ds,
@@ -91,10 +92,79 @@ static const QStringList kMinerEndpoints = {
     QStringLiteral("http://static.34.142.105.178.clients.your-server.de:19081/json_rpc"),
 };
 
+// --- peer cache: seeds + discovered peers, shared by miner + wallet --------
+
+static PeerCache *g_peers = nullptr;
+static QMutex g_peers_init_lock;
+
+// Persist the JSON blob via QSettings (so we get Linux's standard config
+// location automatically, ~/.config/Glaciem/GlaciemMiner.conf).
+static int peers_load_cb(char *out, int cap, void *) {
+    QSettings s("Glaciem", "GlaciemMiner");
+    QString blob = s.value("peerCache").toString();
+    if (blob.isEmpty()) return 0;
+    QByteArray b = blob.toUtf8();
+    int n = qMin(b.size(), cap - 1);
+    memcpy(out, b.constData(), n);
+    out[n] = 0;
+    return 1;
+}
+static void peers_save_cb(const char *json, void *) {
+    QSettings s("Glaciem", "GlaciemMiner");
+    s.setValue("peerCache", QString::fromUtf8(json));
+}
+static void peers_init_once() {
+    QMutexLocker lk(&g_peers_init_lock);
+    if (g_peers) return;
+    g_peers = peer_cache_new(peers_load_cb, peers_save_cb, nullptr);
+    peer_cache_add_seed(g_peers, "glaciem-rpc.frostmine.workers.dev", 443, 1);
+    peer_cache_add_seed(g_peers, "static.197.125.225.46.clients.your-server.de", 19081, 0);
+    peer_cache_add_seed(g_peers, "static.34.142.105.178.clients.your-server.de", 19081, 0);
+}
+
+// Periodic peer discovery: hit /get_peer_list on the endpoint that just
+// answered, look for peers advertising an RPC port, add them to the cache.
+static void tryDiscoverPeers(const PeerEntry &source_peer) {
+    if (!peer_cache_should_discover(g_peers)) return;
+    QString url = QStringLiteral("%1://%2:%3/get_peer_list")
+                      .arg(source_peer.use_ssl ? "https" : "http")
+                      .arg(source_peer.host)
+                      .arg(source_peer.port);
+    QByteArray resp = httpPost(url, QByteArray());
+    if (resp.isEmpty()) { peer_cache_reset_discovery_counter(g_peers); return; }
+    auto doc = QJsonDocument::fromJson(resp);
+    if (!doc.isObject()) { peer_cache_reset_discovery_counter(g_peers); return; }
+    auto white = doc.object().value("white_list").toArray();
+    int added = 0;
+    for (const auto &v : white) {
+        auto p = v.toObject();
+        int rp = p.value("rpc_port").toInt();
+        QString host = p.value("host").toString();
+        if (rp <= 0 || rp > 65535 || host.isEmpty()) continue;
+        peer_cache_add_discovered(g_peers, host.toUtf8().constData(), rp);
+        if (++added >= 4) break;
+    }
+    peer_cache_reset_discovery_counter(g_peers);
+}
+
 QJsonObject jsonRpcAny(const QString &method, const QJsonValue &params) {
-    for (const auto &url : kMinerEndpoints) {
+    peers_init_once();
+    PeerEntry snap[64];
+    int n = peer_cache_snapshot(g_peers, snap, 64);
+    for (int i = 0; i < n; i++) {
+        QString url = QStringLiteral("%1://%2:%3/json_rpc")
+                          .arg(snap[i].use_ssl ? "https" : "http")
+                          .arg(snap[i].host)
+                          .arg(snap[i].port);
+        qint64 t0 = QDateTime::currentMSecsSinceEpoch();
         QJsonObject r = jsonRpc(url, method, params);
-        if (!r.isEmpty()) return r;
+        int latency_ms = (int)(QDateTime::currentMSecsSinceEpoch() - t0);
+        if (!r.isEmpty()) {
+            peer_cache_mark_success(g_peers, snap[i].host, snap[i].port, latency_ms);
+            tryDiscoverPeers(snap[i]);
+            return r;
+        }
+        peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
     }
     return {};
 }
@@ -328,16 +398,10 @@ private:
     int m_idle = 0;
 };
 
-// Wallet-side fallback daemon list (mirrors the miner endpoints but as
-// host:port strings, since wallet2 takes daemon_address in that form).
-static const QStringList kWalletFallbacks = {
-    QStringLiteral("glaciem-rpc.frostmine.workers.dev:443"),
-    QStringLiteral("static.197.125.225.46.clients.your-server.de:19081"),
-    QStringLiteral("static.34.142.105.178.clients.your-server.de:19081"),
-};
 static constexpr int kWalletFailoverThreshold = 3;
 
 void WalletPollThread::run() {
+    peers_init_once();
     int disconnectCount = 0;
     int endpointIdx = 0;
     while (!m_stop) {
@@ -431,15 +495,21 @@ void WalletPollThread::run() {
                 m_e->m_walletSyncing = (conn && !synced);
             }
 
-            // Failover: after N consecutive disconnects, swap to next endpoint.
-            // The wallet's keys/balance/height are preserved; only the HTTP
-            // connection changes.
+            // Failover: after N consecutive disconnects, snapshot the peer
+            // cache (seeds + discovered, in score order) and rotate to the
+            // next entry. Wallet keys/balance/height survive the swap.
             if (conn) {
                 disconnectCount = 0;
             } else if (++disconnectCount >= kWalletFailoverThreshold) {
-                endpointIdx = (endpointIdx + 1) % kWalletFallbacks.size();
-                rime_wallet_set_daemon(w,
-                    kWalletFallbacks[endpointIdx].toUtf8().constData());
+                PeerEntry snap[64];
+                int n = peer_cache_snapshot(g_peers, snap, 64);
+                if (n > 0) {
+                    endpointIdx = (endpointIdx + 1) % n;
+                    QString daemon = QStringLiteral("%1:%2")
+                                         .arg(snap[endpointIdx].host)
+                                         .arg(snap[endpointIdx].port);
+                    rime_wallet_set_daemon(w, daemon.toUtf8().constData());
+                }
                 disconnectCount = 0;
             }
         } else {

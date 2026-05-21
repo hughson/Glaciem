@@ -78,7 +78,7 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        rpc = RpcClient()
+        rpc = RpcClient(this)
         engine = MinerEngine(rpc)
         loadSettings()                 // touches engine.setMiningMode -- must run after engine init
 
