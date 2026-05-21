@@ -34,6 +34,16 @@ Java_com_hughson_rime_WalletNative_close(JNIEnv *env, jobject thiz, jlong h) {
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_hughson_rime_WalletNative_setDaemon(JNIEnv *env, jobject thiz,
+                                              jlong h, jstring daemon) {
+  (void)thiz;
+  const char *d = env->GetStringUTFChars(daemon, nullptr);
+  int ok = rime_wallet_set_daemon(H(h), d);
+  env->ReleaseStringUTFChars(daemon, d);
+  return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_hughson_rime_WalletNative_refresh(JNIEnv *env, jobject thiz, jlong h) {
   (void)env; (void)thiz;
   return rime_wallet_refresh(H(h)) ? JNI_TRUE : JNI_FALSE;

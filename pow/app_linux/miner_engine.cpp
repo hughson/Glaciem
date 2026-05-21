@@ -328,7 +328,18 @@ private:
     int m_idle = 0;
 };
 
+// Wallet-side fallback daemon list (mirrors the miner endpoints but as
+// host:port strings, since wallet2 takes daemon_address in that form).
+static const QStringList kWalletFallbacks = {
+    QStringLiteral("glaciem-rpc.frostmine.workers.dev:443"),
+    QStringLiteral("static.197.125.225.46.clients.your-server.de:19081"),
+    QStringLiteral("static.34.142.105.178.clients.your-server.de:19081"),
+};
+static constexpr int kWalletFailoverThreshold = 3;
+
 void WalletPollThread::run() {
+    int disconnectCount = 0;
+    int endpointIdx = 0;
     while (!m_stop) {
         RimeWallet *w;
         {
@@ -418,6 +429,18 @@ void WalletPollThread::run() {
                 m_e->m_walletHeight = wht;
                 m_e->m_targetHeight = tgt;
                 m_e->m_walletSyncing = (conn && !synced);
+            }
+
+            // Failover: after N consecutive disconnects, swap to next endpoint.
+            // The wallet's keys/balance/height are preserved; only the HTTP
+            // connection changes.
+            if (conn) {
+                disconnectCount = 0;
+            } else if (++disconnectCount >= kWalletFailoverThreshold) {
+                endpointIdx = (endpointIdx + 1) % kWalletFallbacks.size();
+                rime_wallet_set_daemon(w,
+                    kWalletFallbacks[endpointIdx].toUtf8().constData());
+                disconnectCount = 0;
             }
         } else {
             QMutexLocker lk(&m_e->m_lock);

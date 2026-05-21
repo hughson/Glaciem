@@ -474,6 +474,18 @@ static unsigned __stdcall mine_thread(void *arg) {
   return 0;
 }
 
+/* Wallet-side fallback daemon list. The wallet opens against the configured
+   host (default: the Cloudflare Worker). If refresh can't reach it for several
+   cycles, swap to the next entry. Same intent as the miner-side endpoint
+   fallback. */
+static const char *const g_wallet_fallbacks[] = {
+  "glaciem-rpc.frostmine.workers.dev:443",
+  "static.197.125.225.46.clients.your-server.de:19081",
+  "static.34.142.105.178.clients.your-server.de:19081",
+};
+#define WALLET_NUM_FALLBACKS ((int)(sizeof g_wallet_fallbacks / sizeof g_wallet_fallbacks[0]))
+#define WALLET_FAILOVER_THRESHOLD 3
+
 /* embedded-wallet poll: owns g_wallet -- opens/recovers it, refreshes it,
    and publishes address/balance/sync into g_sh. Runs for the app's
    lifetime so the wallet panel is live even while not mining. */
@@ -481,6 +493,7 @@ static unsigned __stdcall wallet_thread(void *arg) {
   (void)arg;
   char daemon[96];
   snprintf(daemon,sizeof daemon,"%s:%d",g_host,NODE_PORT);
+  int wallet_disconnects = 0, wallet_ep_idx = 0;
 
   /* open a previously-generated wallet, if one sits next to the .exe */
   g_wallet = rime_wallet_recover(WALLET_FILE, "", daemon, 0);
@@ -573,6 +586,16 @@ static unsigned __stdcall wallet_thread(void *arg) {
       g_sh.wallet_syncing   = (conn && !synced) ? 1 : 0;
       snprintf(g_sh.wallet_addr,sizeof g_sh.wallet_addr,"%s",addr);
       LeaveCriticalSection(&g_sh.cs);
+
+      /* Failover: after N consecutive disconnects, swap to next endpoint.
+         Wallet keys/balance/height are preserved across the swap. */
+      if (conn) {
+        wallet_disconnects = 0;
+      } else if (++wallet_disconnects >= WALLET_FAILOVER_THRESHOLD) {
+        wallet_ep_idx = (wallet_ep_idx + 1) % WALLET_NUM_FALLBACKS;
+        rime_wallet_set_daemon(g_wallet, g_wallet_fallbacks[wallet_ep_idx]);
+        wallet_disconnects = 0;
+      }
     } else {
       EnterCriticalSection(&g_sh.cs);
       g_sh.wallet_connected = 0;

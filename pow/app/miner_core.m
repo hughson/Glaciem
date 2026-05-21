@@ -126,9 +126,30 @@ static NSDictionary *json_rpc(NSString *method, id params) {
   return nil;
 }
 
+/* Wallet-side fallback daemon list. The wallet opens against whatever node
+   the user has configured (defaults to the Cloudflare Worker). When refresh
+   can't reach it for several cycles, swap to the next entry. Same intent as
+   the miner-side fallback (json_rpc) but the wallet talks binary RPC, so
+   the swap path uses rime_wallet_set_daemon -> wallet2::set_daemon. */
+static NSArray<NSString *> *wallet_endpoints(void) {
+  static NSArray<NSString *> *eps = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    eps = @[
+      @"glaciem-rpc.frostmine.workers.dev:443",
+      @"static.197.125.225.46.clients.your-server.de:19081",
+      @"static.34.142.105.178.clients.your-server.de:19081",
+    ];
+  });
+  return eps;
+}
+#define WALLET_FAILOVER_THRESHOLD 3   /* consecutive disconnects before swap */
+
 /* ---- embedded-wallet poll: address + balance + sync state ---- */
 static void *wallet_poll(void *arg) {
   (void)arg;
+  int disconnect_count = 0;
+  int endpoint_idx = 0;       /* index into wallet_endpoints() */
   while (1) {
     RimeWallet *w;
     pthread_mutex_lock(&g_lock);
@@ -175,6 +196,20 @@ static void *wallet_poll(void *arg) {
       g_stats.target_height    = tgt;
       g_stats.wallet_syncing   = (conn && !synced) ? 1 : 0;
       pthread_mutex_unlock(&g_lock);
+
+      /* Failover: if the daemon is unreachable for several cycles in a row,
+         swap to the next entry in wallet_endpoints(). The wallet's keys,
+         balance, and scanned height are preserved across the swap -- only
+         the HTTP connection changes. */
+      if (conn) {
+        disconnect_count = 0;
+      } else if (++disconnect_count >= WALLET_FAILOVER_THRESHOLD) {
+        NSArray<NSString *> *eps = wallet_endpoints();
+        endpoint_idx = (endpoint_idx + 1) % (int)eps.count;
+        NSString *next = eps[endpoint_idx];
+        rime_wallet_set_daemon(w, next.UTF8String);
+        disconnect_count = 0;
+      }
     } else {
       pthread_mutex_lock(&g_lock);
       g_stats.wallet_connected = 0;

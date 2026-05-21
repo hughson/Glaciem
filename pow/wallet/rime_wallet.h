@@ -29,6 +29,12 @@ RimeWallet *rime_wallet_open(const char *path, const char *password,
 
 void rime_wallet_close(RimeWallet *w);
 
+/* Re-point an already-open wallet at a different daemon. Keys, balance, and
+   history are preserved; only the underlying HTTP connection swaps. Used by
+   the apps for daemon failover (e.g. when the Cloudflare Worker is
+   unreachable). Returns 1 on success, 0 on failure. */
+int rime_wallet_set_daemon(RimeWallet *w, const char *daemon_address);
+
 /* Blocking chain scan -- call from a background thread. Returns 1 on success. */
 int rime_wallet_refresh(RimeWallet *w);
 

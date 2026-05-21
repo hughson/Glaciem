@@ -179,7 +179,20 @@ class MinerEngine(private val rpc: RpcClient) {
         )
     }
 
+    // Wallet-side fallback daemon list. The wallet opens against the user's
+    // configured node (default = Cloudflare Worker). After several consecutive
+    // disconnects, swap to the next entry. Keys/balance/height survive the
+    // swap -- only the HTTP connection changes.
+    private val walletFallbacks = listOf(
+        "glaciem-rpc.frostmine.workers.dev:443",
+        "static.197.125.225.46.clients.your-server.de:19081",
+        "static.34.142.105.178.clients.your-server.de:19081",
+    )
+    private val walletFailoverThreshold = 3
+
     private fun walletLoop() {
+        var disconnectCount = 0
+        var endpointIdx = 0
         while (true) {
             val h = walletHandle
             if (h != 0L) {
@@ -203,6 +216,14 @@ class MinerEngine(private val rpc: RpcClient) {
                     targetHeight  = WalletNative.daemonHeight(h)
                     walletSyncing = walletOk && !WalletNative.isSynchronized(h)
                     WalletNative.store(h)                 // persist so balance survives a relaunch
+                    // failover: after N consecutive disconnects, swap to next endpoint
+                    if (walletOk) {
+                        disconnectCount = 0
+                    } else if (++disconnectCount >= walletFailoverThreshold) {
+                        endpointIdx = (endpointIdx + 1) % walletFallbacks.size
+                        WalletNative.setDaemon(h, walletFallbacks[endpointIdx])
+                        disconnectCount = 0
+                    }
                 } catch (e: Throwable) {
                     walletOk = false
                     android.util.Log.w(TAG, "wallet poll: ${e.message}")

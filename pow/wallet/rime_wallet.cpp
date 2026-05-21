@@ -104,6 +104,23 @@ void rime_wallet_close(RimeWallet *tw) {
   } catch (...) {}
 }
 
+/* Re-point an open wallet at a new daemon (failover). Wallet::init() is the
+   only swap path wallet_api exposes -- calling it again post-construction
+   re-runs wallet2::set_daemon() which closes the existing connection and
+   sets the new address. Keys, balance, scanned-height, and history are
+   preserved; only the HTTP connection state is swapped. */
+int rime_wallet_set_daemon(RimeWallet *tw, const char *daemon_address) {
+  try {
+    if (!tw || !tw->w || !daemon_address || !daemon_address[0]) return 0;
+    bool ok = tw->w->init(std::string(daemon_address), (uint64_t)0);
+    int st = 0; std::string err;
+    tw->w->statusWithErrorString(st, err);
+    TLOG("set_daemon('%s') -> %d  status=%d err='%s'", daemon_address,
+         (int)ok, st, err.c_str());
+    return ok ? 1 : 0;
+  } catch (...) { return 0; }
+}
+
 int rime_wallet_refresh(RimeWallet *tw) {
   try {
     if (!tw || !tw->w) return 0;

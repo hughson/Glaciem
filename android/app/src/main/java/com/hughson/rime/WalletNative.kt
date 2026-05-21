@@ -16,6 +16,11 @@ object WalletNative {
                          restoreHeight: Long): Long
 
     external fun close(handle: Long)
+
+    /** Re-point an open wallet at a different daemon. Keys, balance, and
+     *  scanned height are preserved; only the HTTP connection swaps. */
+    external fun setDaemon(handle: Long, daemon: String): Boolean
+
     external fun refresh(handle: Long): Boolean
 
     /** Persist the wallet cache to disk so the balance survives a relaunch. */
