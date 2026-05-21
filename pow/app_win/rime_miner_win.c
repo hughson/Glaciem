@@ -1148,19 +1148,22 @@ static LRESULT CALLBACK HostProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
   case WM_CREATE: {
     HINSTANCE hi=((LPCREATESTRUCT)lp)->hInstance;
-    CreateWindowExA(0,"STATIC","Node host -- the machine running rimed:",
-                    WS_CHILD|WS_VISIBLE, 16,12,400,18,h,NULL,hi,NULL);
+    CreateWindowExA(0,"STATIC",
+                    "Node the wallet syncs from. The miner ignores this -- "
+                    "it uses an automatic multi-node fallback. Set 127.0.0.1 "
+                    "to point the wallet at a local rimed.",
+                    WS_CHILD|WS_VISIBLE, 16,12,400,48,h,NULL,hi,NULL);
     CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT",g_host,
                     WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
-                    16,32,392,24,h,(HMENU)IDC_HOST_EDIT,hi,NULL);
+                    16,64,392,24,h,(HMENU)IDC_HOST_EDIT,hi,NULL);
     CreateWindowExA(0,"STATIC",
                     "Port is fixed at 19081. Saved to rime_host.txt -- "
                     "takes effect when you restart Glaciem Miner.",
-                    WS_CHILD|WS_VISIBLE, 16,64,392,34,h,NULL,hi,NULL);
+                    WS_CHILD|WS_VISIBLE, 16,92,392,34,h,NULL,hi,NULL);
     CreateWindowExA(0,"BUTTON","Save",WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,
-                    218,106,92,30,h,(HMENU)IDC_HOST_OK,hi,NULL);
+                    218,140,92,30,h,(HMENU)IDC_HOST_OK,hi,NULL);
     CreateWindowExA(0,"BUTTON","Cancel",WS_CHILD|WS_VISIBLE,
-                    316,106,92,30,h,(HMENU)IDC_HOST_CXL,hi,NULL);
+                    316,140,92,30,h,(HMENU)IDC_HOST_CXL,hi,NULL);
     return 0;
   }
   case WM_COMMAND:
@@ -1209,7 +1212,7 @@ static void do_host(HWND parent) {
   EnableWindow(parent,FALSE);
   g_host_dlg=CreateWindowExA(WS_EX_DLGMODALFRAME,"RimeHostWnd","Node Host",
       WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,
-      pr.left+40,pr.top+70,440,210,parent,NULL,hi,NULL);
+      pr.left+40,pr.top+70,440,250,parent,NULL,hi,NULL);
   if (!g_host_dlg) EnableWindow(parent,TRUE);
 }
 

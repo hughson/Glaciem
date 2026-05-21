@@ -472,7 +472,7 @@ Window {
             spacing: 10
             Text {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; color: dim
-                text: "The Glaciem node this app connects to (the Cloudflare Worker by default — fails over across the network's nodes)."
+                text: "The Glaciem node the wallet syncs from. The miner ignores this setting — it uses an automatic multi-node fallback (Cloudflare Worker + bootstrap nodes + discovered peers). Set 127.0.0.1 port 19081 to point the wallet at a local rimed."
                 font { family: root.monoFamily; pixelSize: 10 }
             }
             Text { text: "node host"; color: dim; font.family: root.monoFamily; font.pixelSize: 10 }

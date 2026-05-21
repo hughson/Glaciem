@@ -247,7 +247,7 @@ private struct SettingsSheet: View {
             Text("SETTINGS")
                 .font(.system(size: 13, weight: .bold, design: .monospaced))
                 .foregroundColor(amber).tracking(2)
-            Text("The Glaciem node this app connects to — it serves block templates for mining and the blockchain for your wallet. Point it at any reachable Glaciem node.")
+            Text("The Glaciem node the wallet syncs from. The miner ignores this setting — it uses an automatic multi-node fallback (Cloudflare Worker + bootstrap nodes + discovered peers). To use your own local node, set 127.0.0.1 port 19081.")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(dimText)
                 .multilineTextAlignment(.leading)

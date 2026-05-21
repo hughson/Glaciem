@@ -726,9 +726,9 @@ private fun SettingsDialog(
             Text("SETTINGS", color = amber, fontFamily = mono,
                 fontSize = 13.sp, fontWeight = FontWeight.Bold)
             Text(
-                "The Glaciem node this app connects to — it serves block " +
-                    "templates for mining and the blockchain for your wallet. " +
-                    "Point it at any reachable Glaciem node.",
+                "The Glaciem node the wallet syncs from. The miner ignores " +
+                    "this — it uses an automatic multi-node fallback. Set " +
+                    "127.0.0.1 port 19081 to point the wallet at a local rimed.",
                 color = dim, fontFamily = mono, fontSize = 9.sp,
             )
             SettingField("node address", nodeHost) { nodeHost = it }
