@@ -64,36 +64,56 @@ static void load_host(LPSTR cmd) {
   if (tmp[0]) snprintf(g_host,sizeof g_host,"%s",tmp);
 }
 
-/* POST `body` to the Cloudflare RPC proxy over HTTPS. Cloudflare absorbs the
-   connection storm a difficulty-1 miner produces, so the node is never hit
-   directly for mining and cannot be traffic-scrubbed off the public net. */
-static int http_post(int port, const char *body, char *resp, int resp_sz) {
-  (void)port;  /* miner RPC always goes through the Cloudflare proxy */
+/* Miner-RPC endpoint list, tried in order. The Cloudflare Worker is primary
+   (it absorbs the connection storm a difficulty-1 miner produces). The two
+   direct-node fallbacks exist for resilience: if the Worker is unreachable
+   -- rate-limited, account issue, CF outage -- the miner cycles through them
+   so the network keeps mining instead of going dark. */
+typedef struct {
+  const wchar_t *host;
+  INTERNET_PORT  port;
+  int            secure;  /* 1 = HTTPS, 0 = HTTP */
+} Endpoint;
+static const Endpoint g_endpoints[] = {
+  { L"glaciem-rpc.frostmine.workers.dev",            INTERNET_DEFAULT_HTTPS_PORT, 1 },
+  { L"static.197.125.225.46.clients.your-server.de", 19081, 0 },
+  { L"static.34.142.105.178.clients.your-server.de", 19081, 0 },
+};
+#define NUM_ENDPOINTS ((int)(sizeof g_endpoints / sizeof g_endpoints[0]))
+
+/* POST `body` to a single endpoint; 1 = success, 0 = try the next one. */
+static int http_post_to(const Endpoint *ep, const char *body, char *resp, int resp_sz) {
   int ok = 0;
   HINTERNET hs = WinHttpOpen(L"RimeMiner/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
                              WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
   if (!hs) return 0;
   WinHttpSetTimeouts(hs, 4000, 4000, 5000, 6000);
-  HINTERNET hc = WinHttpConnect(hs, L"glaciem-rpc.frostmine.workers.dev",
-                                INTERNET_DEFAULT_HTTPS_PORT, 0);
+  HINTERNET hc = WinHttpConnect(hs, ep->host, ep->port, 0);
   if (hc) {
+    DWORD flags = ep->secure ? WINHTTP_FLAG_SECURE : 0;
     HINTERNET hr = WinHttpOpenRequest(hc, L"POST", L"/json_rpc", NULL,
-        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+        WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, flags);
     if (hr) {
       if (WinHttpSendRequest(hr, L"Content-Type: application/json\r\n", (DWORD)-1,
                              (void*)body, (DWORD)strlen(body),
                              (DWORD)strlen(body), 0) &&
           WinHttpReceiveResponse(hr, NULL)) {
-        int got = 0; DWORD avail = 0;
-        while (WinHttpQueryDataAvailable(hr,&avail) && avail > 0) {
-          if (got + (int)avail > resp_sz-1) avail = (DWORD)(resp_sz-1-got);
-          if ((int)avail <= 0) break;
-          DWORD rd = 0;
-          if (!WinHttpReadData(hr, resp+got, avail, &rd) || rd == 0) break;
-          got += (int)rd;
+        DWORD status = 0, slen = sizeof status;
+        WinHttpQueryHeaders(hr, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                            NULL, &status, &slen, NULL);
+        /* 4xx/5xx => fall through to the next endpoint (e.g. 429 rate-limit) */
+        if (status >= 200 && status < 400) {
+          int got = 0; DWORD avail = 0;
+          while (WinHttpQueryDataAvailable(hr,&avail) && avail > 0) {
+            if (got + (int)avail > resp_sz-1) avail = (DWORD)(resp_sz-1-got);
+            if ((int)avail <= 0) break;
+            DWORD rd = 0;
+            if (!WinHttpReadData(hr, resp+got, avail, &rd) || rd == 0) break;
+            got += (int)rd;
+          }
+          resp[got] = 0;
+          ok = (got > 0);
         }
-        resp[got] = 0;
-        ok = (got > 0);
       }
       WinHttpCloseHandle(hr);
     }
@@ -101,6 +121,15 @@ static int http_post(int port, const char *body, char *resp, int resp_sz) {
   }
   WinHttpCloseHandle(hs);
   return ok;
+}
+
+/* Wrapper: try each endpoint in order until one succeeds. */
+static int http_post(int port, const char *body, char *resp, int resp_sz) {
+  (void)port;
+  for (int i = 0; i < NUM_ENDPOINTS; i++) {
+    if (http_post_to(&g_endpoints[i], body, resp, resp_sz)) return 1;
+  }
+  return 0;
 }
 
 /* JSON-RPC call -> full response body in `resp`. 1 on success. */

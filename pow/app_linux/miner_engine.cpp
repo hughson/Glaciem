@@ -81,6 +81,24 @@ QJsonObject jsonRpc(const QString &nodeUrl, const QString &method,
     return doc.object().value("result").toObject();
 }
 
+// Miner-RPC endpoints, tried in order. The Cloudflare Worker is primary
+// (it absorbs the connection storm a difficulty-1 miner produces); the
+// direct-node URLs are pure resilience fallbacks for when the Worker is
+// unreachable (rate-limited, CF outage, etc.) so the network keeps mining.
+static const QStringList kMinerEndpoints = {
+    QStringLiteral("https://glaciem-rpc.frostmine.workers.dev/json_rpc"),
+    QStringLiteral("http://static.197.125.225.46.clients.your-server.de:19081/json_rpc"),
+    QStringLiteral("http://static.34.142.105.178.clients.your-server.de:19081/json_rpc"),
+};
+
+QJsonObject jsonRpcAny(const QString &method, const QJsonValue &params) {
+    for (const auto &url : kMinerEndpoints) {
+        QJsonObject r = jsonRpc(url, method, params);
+        if (!r.isEmpty()) return r;
+    }
+    return {};
+}
+
 QByteArray hex2bin(const QString &hex) {
     return QByteArray::fromHex(hex.toLatin1());
 }
@@ -163,14 +181,6 @@ void WorkerThread::run() {
     uint64_t total = 0, blocks = 0;
     int best = 0;
 
-    QString nodeUrl;
-    {
-        QMutexLocker lk(&m_e->m_lock);
-        nodeUrl = QStringLiteral("https://%1:%2/json_rpc")
-                      .arg(m_e->m_nodeHost)
-                      .arg(m_e->m_nodePort);
-    }
-
     while (!m_stop) {
         // Mine to the embedded wallet's address; refuse to mine without one.
         QString addr;
@@ -186,10 +196,10 @@ void WorkerThread::run() {
             continue;
         }
 
-        // get_block_template
-        auto tpl = jsonRpc(nodeUrl, "get_block_template",
-                           QJsonObject{{"wallet_address", addr},
-                                       {"reserve_size", 8}});
+        // get_block_template -- tries the endpoint list in order; Worker first
+        auto tpl = jsonRpcAny("get_block_template",
+                              QJsonObject{{"wallet_address", addr},
+                                          {"reserve_size", 8}});
         QString hbHex = tpl.value("blockhashing_blob").toString();
         QString tbHex = tpl.value("blocktemplate_blob").toString();
         if (hbHex.isEmpty() || tbHex.isEmpty()) {
@@ -284,8 +294,8 @@ void WorkerThread::run() {
             tb[noff + 1] = (char)(win >> 8);
             tb[noff + 2] = (char)(win >> 16);
             tb[noff + 3] = (char)(win >> 24);
-            auto sr = jsonRpc(nodeUrl, "submit_block",
-                              QJsonArray{QString::fromLatin1(tb.toHex())});
+            auto sr = jsonRpcAny("submit_block",
+                                 QJsonArray{QString::fromLatin1(tb.toHex())});
             if (sr.value("status").toString() == "OK") {
                 blocks++;
                 QMutexLocker lk(&m_e->m_lock);

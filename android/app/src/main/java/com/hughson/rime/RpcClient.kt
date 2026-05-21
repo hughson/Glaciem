@@ -18,10 +18,25 @@ class RpcClient {
     @Volatile var walletHost: String = "46.225.125.197"
     @Volatile var walletPort: Int = 29083
 
-    // Miner RPC goes through the Cloudflare proxy, which absorbs the connection
-    // storm a difficulty-1 miner produces; the node is never hit directly.
-    private fun nodeUrl() = "https://glaciem-rpc.frostmine.workers.dev/json_rpc"
+    // Miner-RPC endpoints, tried in order. The Cloudflare Worker is primary
+    // (it absorbs the connection storm a difficulty-1 miner produces); the
+    // direct-node URLs are pure resilience fallbacks for when the Worker is
+    // unreachable (rate-limited, CF outage, etc.) so the network keeps mining.
+    private val minerEndpoints = listOf(
+        "https://glaciem-rpc.frostmine.workers.dev/json_rpc",
+        "http://static.197.125.225.46.clients.your-server.de:19081/json_rpc",
+        "http://static.34.142.105.178.clients.your-server.de:19081/json_rpc",
+    )
     private fun walletUrl() = "http://$walletHost:$walletPort/json_rpc"
+
+    /** POST a JSON-RPC request to the first reachable miner endpoint. */
+    private fun callAny(method: String, params: Any?): JSONObject? {
+        for (url in minerEndpoints) {
+            val r = call(url, method, params)
+            if (r != null) return r
+        }
+        return null
+    }
 
     /** POST a JSON-RPC request, return its `result` object (or null on failure). */
     private fun call(urlStr: String, method: String, params: Any?): JSONObject? {
@@ -54,19 +69,19 @@ class RpcClient {
     // ---- node (rimed) ----
 
     fun getBlockTemplate(walletAddress: String): JSONObject? =
-        call(
-            nodeUrl(), "get_block_template",
+        callAny(
+            "get_block_template",
             JSONObject().put("wallet_address", walletAddress).put("reserve_size", 8),
         )
 
     fun submitBlock(blockHex: String): Boolean {
-        val r = call(nodeUrl(), "submit_block", JSONArray().put(blockHex))
+        val r = callAny("submit_block", JSONArray().put(blockHex))
         return r?.optString("status") == "OK"
     }
 
     /** Current blockchain height of the node, or null if unreachable. */
     fun getNodeHeight(): Long? {
-        val r = call(nodeUrl(), "get_info", JSONObject()) ?: return null
+        val r = callAny("get_info", JSONObject()) ?: return null
         return if (r.has("height")) r.optLong("height") else null
     }
 

@@ -99,12 +99,31 @@ static NSDictionary *json_rpc_url(NSString *url, NSString *method, id params) {
   id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
   return [resp isKindOfClass:NSDictionary.class] ? resp[@"result"] : nil;
 }
-/* Miner node RPC goes through the Cloudflare proxy. Cloudflare absorbs the
-   connection storm a difficulty-1 miner produces, so the node is never hit
-   directly for mining and cannot be traffic-scrubbed off the public net. */
+/* Miner-RPC endpoint list, tried in order. The Cloudflare Worker stays
+   primary -- it absorbs the connection storm a difficulty-1 miner produces,
+   so the nodes are never hit directly for mining and can't be traffic-scrubbed
+   off the public net during normal operation. The two direct-node fallbacks
+   exist solely for resilience: if the Worker is unreachable (rate-limited,
+   account issue, CF outage) the miner cycles through them so the network
+   keeps mining instead of going dark. */
+static NSArray<NSString *> *miner_endpoints(void) {
+  static NSArray<NSString *> *eps = nil;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    eps = @[
+      @"https://glaciem-rpc.frostmine.workers.dev/json_rpc",
+      @"http://static.197.125.225.46.clients.your-server.de:19081/json_rpc",
+      @"http://static.34.142.105.178.clients.your-server.de:19081/json_rpc",
+    ];
+  });
+  return eps;
+}
 static NSDictionary *json_rpc(NSString *method, id params) {
-  return json_rpc_url(@"https://glaciem-rpc.frostmine.workers.dev/json_rpc",
-                      method, params);
+  for (NSString *url in miner_endpoints()) {
+    NSDictionary *r = json_rpc_url(url, method, params);
+    if (r) return r;
+  }
+  return nil;
 }
 
 /* ---- embedded-wallet poll: address + balance + sync state ---- */
