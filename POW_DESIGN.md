@@ -1,12 +1,16 @@
 # Lattice — Proof-of-Work Design
 
-**Status: provisional parameters — testnet-only — NOT cryptographically reviewed.**
+**Status: live on Glaciem mainnet (since 2026-05-20) — provisional parameters
+— NOT cryptographically reviewed.**
 
-Lattice is Glaciem's custom proof-of-work. It is implemented, integrated into the
-daemon at hard-fork **v18** (`HF_VERSION_LATTICE`), and running on the Glaciem
-testnet. Its parameters are provisional. It has had **no external cryptographic
-review** — that review is a hard prerequisite before any mainnet use, and
-nothing here ships to mainnet without it.
+Lattice is Glaciem's custom proof-of-work. It is implemented, integrated into
+the daemon at hard-fork **v18** (`HF_VERSION_LATTICE`), and is the active
+consensus algorithm on Glaciem mainnet. Its parameters are still provisional.
+It has had **no external cryptographic review** — that review remains the
+single most important open item for the project (§8, §10, §11). Mainnet
+launched without it, deliberately and explicitly as an experimental coin:
+GLAC has no exchange listing and no market price, and users are told to mine
+at their own risk.
 
 This document describes what Lattice is. It also keeps, on the record, the
 design dead-end that came before it: Lattice's predecessor was a two-phase
@@ -199,7 +203,7 @@ were all retired once this was settled; Lattice is what remained.
 | GPU mining farm | Resisted — the 1 MiB per-nonce scratchpad collapses GPU occupancy (RandomX-style), and Lattice is CPU-only, so a GPU has no native path. GPU-*hard*, like RandomX — not GPU-*proof*. |
 | Large multi-core CPU server (EPYC) | **Not specifically defended.** Lattice is CPU-hard; a strong many-core CPU mines it well. Same property as RandomX. The economic tilt (§7.2), not the algorithm, is what favours Apple. |
 | Rented cloud hashrate | Cloud GPU instances are GPU-heavy and CPU-light; a CPU-bound PoW mines poorly on them. A mild, real, incidental effect — not a designed moat. |
-| Novel-algorithm risk | **The real risk.** Lattice is unreviewed. A novel PoW can hide a shortcut (mine far faster than intended) or an ASIC path. Only external review reduces this. |
+| Novel-algorithm risk | **The dominant risk.** Lattice is unreviewed and is now the live consensus algorithm on mainnet. A novel PoW can hide a shortcut (mine far faster than intended) or an ASIC path. External cryptographic review is the only thing that reduces this risk; until then, users are advised that GLAC is an experimental coin, not an investment. |
 | Bootstrap-window 51% | Mitigated operationally — developer checkpoints during the low-hashrate window, retired once honest hashrate is healthy; longer early coinbase maturity. |
 
 ## 9. Implementation status
@@ -212,14 +216,17 @@ were all retired once this was settled; Lattice is what remained.
 - Miners: [`pow/app/`](pow/app) (native macOS app) and [`android/`](android)
   (native Android app), both with a built-in wallet.
 - Integrated into the daemon at `HF_VERSION_LATTICE` (v18). On a fresh chain
-  Lattice runs from block 2; the testnet mines and validates it.
+  Lattice runs from block 2; Glaciem mainnet (launched 2026-05-20) mines and
+  validates Lattice blocks live.
 
 ## 10. Open risks
 
-- **Not cryptographically reviewed.** This is the dominant risk and the hard
-  gate before mainnet.
+- **Not cryptographically reviewed.** This remains the dominant risk. Mainnet
+  is live without review, on the explicit basis that Glaciem is an
+  experimental project and GLAC is not an investment. External review is the
+  single most important open item for the project.
 - `SCRATCH_WORDS` and `L_WALK` are provisional — they need a measurement-driven
-  sweep on real hardware.
+  sweep on real hardware. Tuning is a future hard-fork item.
 - A novel PoW may contain an unknown optimisation or ASIC path (§8).
 - The Apple-Silicon advantage is **economic, not structural** (§7) — it is a
   market tilt, and the algorithm alone does not guarantee it.
@@ -227,11 +234,14 @@ were all retired once this was settled; Lattice is what remained.
 ## 11. Roadmap
 
 1. ☑ CPU reference, test vectors, self-tests.
-2. ☑ Integrated into the daemon at `HF_VERSION_LATTICE` (v18); testnet mines
-   and validates.
-3. ☑ Native miners — macOS app and Android app, with a built-in wallet.
+2. ☑ Integrated into the daemon at `HF_VERSION_LATTICE` (v18).
+3. ☑ Native miners — macOS, Windows, Android, and Linux apps, each with a
+   built-in wallet.
 4. ☑ The two-phase CPU+GPU predecessor and its unified-memory moat were
    empirically disproven and retired (§7).
-5. ☐ Tune `SCRATCH_WORDS` and `L_WALK` by measurement.
-6. ☐ **External cryptographic review** — the hard gate.
-7. ☐ Schedule the mainnet hard fork (only after review).
+5. ☑ **Mainnet launched (2026-05-20)** — fair start, no premine; explicitly
+   experimental, mine at your own risk.
+6. ☐ **External cryptographic review of Lattice** — the most important open
+   item. Mainnet launched without it; this is the gap that needs closing.
+7. ☐ Measurement-driven tuning of `SCRATCH_WORDS` and `L_WALK`, delivered as
+   a future hard fork.
