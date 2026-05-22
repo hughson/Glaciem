@@ -127,6 +127,51 @@ class RpcClient(context: Context) {
         return r?.optString("status") == "OK"
     }
 
+    // ---- v1.1.6: pool mode HTTP helpers ---------------------------------
+    //
+    // The pool exposes a flat JSON API (not JSON-RPC) at {poolUrl}/pool/job
+    // and /pool/submit. CORS-friendly via the Cloudflare proxy. We do plain
+    // HttpURLConnection POSTs to keep dependencies minimal (no okhttp).
+
+    /** POST a flat JSON object and parse the response, or return null. */
+    private fun httpPostJson(url: String, body: JSONObject): JSONObject? {
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "POST"
+                connectTimeout = 5000
+                readTimeout = 8000
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            conn.outputStream.use { it.write(body.toString().toByteArray(Charsets.UTF_8)) }
+            val code = conn.responseCode
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream.bufferedReader().use { it.readText() }
+            conn.disconnect()
+            if (code in 200..299) JSONObject(text) else null
+        } catch (_: Throwable) { null }
+    }
+
+    /** Fetch a job from a pool. Returns the full {job_id, blockhashing_blob,
+     *  blocktemplate_blob, seed_hash, height, network_difficulty,
+     *  share_difficulty, target} payload as-is, or null on transport failure. */
+    fun poolGetJob(poolUrl: String, payoutWallet: String): JSONObject? {
+        val u = poolUrl.trimEnd('/') + "/pool/job"
+        return httpPostJson(u, JSONObject().put("wallet", payoutWallet))
+    }
+
+    /** Submit a share (or full block) to the pool. */
+    fun poolSubmit(poolUrl: String, jobId: String, payoutWallet: String,
+                   nonce: Long, isFullBlock: Boolean): JSONObject? {
+        val u = poolUrl.trimEnd('/') + "/pool/submit"
+        val body = JSONObject()
+            .put("job_id", jobId)
+            .put("wallet", payoutWallet)
+            .put("nonce", nonce)
+            .put("full_block", isFullBlock)
+        return httpPostJson(u, body)
+    }
+
     /** Current blockchain height of the node, or null if unreachable. */
     fun getNodeHeight(): Long? {
         val r = callAny("get_info", JSONObject()) ?: return null

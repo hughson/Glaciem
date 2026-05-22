@@ -16,14 +16,16 @@ at build time.
 
 ## [1.1.6] – 2026-05-22
 
-Mac-only release. Adds a **POOL** mining mode alongside the existing
-SOLO behavior. Lets the Mac miner connect to the official pool at
-**glaciem-pool.frostmine.workers.dev** — or any compatible pool — and
-get proportional payouts based on share contribution.
+Adds a **POOL** mining mode to the Mac and Android apps alongside
+the existing SOLO behavior. Lets miners connect to the official pool
+at **glaciem-pool.frostmine.workers.dev** — or any compatible pool —
+and get proportional payouts based on share contribution.
 
 Pool infrastructure ships as a separate piece (`pool/` directory in
-the repo); the Mac is the first client. Windows / Linux / Android
-roll out in a follow-up.
+the repo). Mac + Android are the first two clients; Windows + Linux
+follow in v1.1.7. Public website only advertises the **Android**
+v1.1.6 download for now; Mac users with the pool mode pull from
+GitHub Releases directly until the Mac build is verified in the wild.
 
 ### Added
 - New SOLO/POOL toggle + pool URL field in the Settings sheet
@@ -51,11 +53,16 @@ roll out in a follow-up.
 - v1 trust-mode pool: shares are NOT re-verified server-side yet.
   Acceptable for the small early network; a hostile miner could
   falsely claim shares. Server-side Lattice verification is v2.
-- Pool fee is 0% at launch. Auto-payout threshold is 0.1 GLAC.
+- Pool fee is 0% at launch. Auto-payout threshold is **10 GLAC**.
   See <https://glaciem-pool.frostmine.workers.dev/> for live stats.
-- Windows / Linux / Android stay at v1.1.5; same pool-mode patch
-  coming as a follow-up after this Mac change is verified clean
-  in production.
+- Android port mirrors the Mac change: `MinerEngine.kt` adds
+  `poolEnabled` / `poolUrl` + `setPoolConfig()`, the mining loop
+  branches on pool mode, and the Settings dialog gains a POOL MODE
+  switch + URL field (persisted in SharedPreferences as
+  `poolEnabled` / `poolUrl`). `RpcClient.kt` gains `poolGetJob` and
+  `poolSubmit` HTTP helpers.
+- Windows / Linux stay at v1.1.4 on the website; same pool-mode
+  patch coming as a follow-up.
 
 ## [1.1.5] – 2026-05-22
 

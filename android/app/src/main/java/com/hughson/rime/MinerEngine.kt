@@ -3,6 +3,7 @@ package com.hughson.rime
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import org.json.JSONObject
 import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import kotlin.random.Random
@@ -63,6 +64,17 @@ class MinerEngine(private val rpc: RpcClient) {
     }
     fun setMiningMode(m: MiningMode) { miningMode = m }
     fun getMiningMode(): MiningMode = miningMode
+
+    // v1.1.6: pool mode. When enabled, mineLoop pulls jobs from the pool
+    // and submits shares to it instead of talking to a daemon directly.
+    @Volatile private var poolEnabled: Boolean = false
+    @Volatile private var poolUrl: String = "https://glaciem-pool.frostmine.workers.dev"
+    fun setPoolConfig(enabled: Boolean, url: String) {
+        poolEnabled = enabled
+        if (url.isNotBlank()) poolUrl = url.trimEnd('/')
+    }
+    fun getPoolEnabled(): Boolean = poolEnabled
+    fun getPoolUrl(): String = poolUrl
 
     // mining stats (written by the miner thread)
     @Volatile private var daemonConnected = false
@@ -269,12 +281,24 @@ class MinerEngine(private val rpc: RpcClient) {
                 continue
             }
             noAddress = false
-            val tpl = rpc.getBlockTemplate(mineTo)
+
+            // v1.1.6: branch on pool mode. In pool mode we fetch a job from
+            // the pool (which substitutes the POOL's wallet as the coinbase
+            // recipient and tracks our share contribution against `mineTo`).
+            val poolMode = poolEnabled
+            val poolUrlSnapshot = poolUrl
+            val tpl: JSONObject? =
+                if (poolMode) rpc.poolGetJob(poolUrlSnapshot, mineTo)
+                else          rpc.getBlockTemplate(mineTo)
             val hbHex = tpl?.optString("blockhashing_blob")
             val tbHex = tpl?.optString("blocktemplate_blob")
             if (tpl == null || hbHex.isNullOrEmpty() || tbHex.isNullOrEmpty()) {
                 if (prevDaemon != 0) {
-                    android.util.Log.w(TAG, "daemon unreachable at ${rpc.nodeHost}:${rpc.nodePort}")
+                    if (poolMode) {
+                        android.util.Log.w(TAG, "pool unreachable at $poolUrlSnapshot")
+                    } else {
+                        android.util.Log.w(TAG, "daemon unreachable at ${rpc.nodeHost}:${rpc.nodePort}")
+                    }
                     prevDaemon = 0
                 }
                 daemonConnected = false
@@ -285,8 +309,13 @@ class MinerEngine(private val rpc: RpcClient) {
             }
             daemonConnected = true
             if (prevDaemon != 1) {
-                android.util.Log.i(TAG, "daemon connected at ${rpc.nodeHost}:${rpc.nodePort}, " +
-                    "height=${tpl.optLong("height")} difficulty=${tpl.optLong("difficulty")}")
+                android.util.Log.i(TAG, if (poolMode) {
+                    "pool connected at $poolUrlSnapshot, " +
+                    "height=${tpl.optLong("height")} share_diff=${tpl.optLong("share_difficulty")}"
+                } else {
+                    "daemon connected at ${rpc.nodeHost}:${rpc.nodePort}, " +
+                    "height=${tpl.optLong("height")} difficulty=${tpl.optLong("difficulty")}"
+                })
                 prevDaemon = 1
             }
 
@@ -297,7 +326,21 @@ class MinerEngine(private val rpc: RpcClient) {
                 continue
             }
             height = tpl.optLong("height")
-            difficulty = tpl.optLong("difficulty")
+            // v1.1.6: in pool mode, the "difficulty" we hash against is the
+            // pool's share_difficulty (much lower than network). The real
+            // network difficulty is reported separately and used to decide
+            // whether a found share also solves the actual block.
+            difficulty = if (poolMode) {
+                tpl.optLong("share_difficulty")
+            } else {
+                tpl.optLong("difficulty")
+            }
+            val netDifficulty = if (poolMode) {
+                tpl.optLong("network_difficulty")
+            } else {
+                difficulty
+            }
+            val poolJobId = if (poolMode) tpl.optString("job_id") else ""
             val nonceOff = nonceOffset(hb)
             if (nonceOff + 4 > hb.size) {
                 if (!sleepWhileRunning(300)) break
@@ -344,15 +387,36 @@ class MinerEngine(private val rpc: RpcClient) {
             publish()
 
             if (winner >= 0L) {
-                val block = tb.copyOf()
                 val w = winner.toInt()
-                block[nonceOff] = (w and 0xFF).toByte()
-                block[nonceOff + 1] = ((w ushr 8) and 0xFF).toByte()
-                block[nonceOff + 2] = ((w ushr 16) and 0xFF).toByte()
-                block[nonceOff + 3] = ((w ushr 24) and 0xFF).toByte()
-                val ok = rpc.submitBlock(bytesToHex(block))
-                if (ok) blocksFound++
-                android.util.Log.i(TAG, "submit_block nonce=$w -> ${if (ok) "OK (height ~$height)" else "rejected"}")
+                if (poolMode) {
+                    // Re-hash the winning nonce against the network difficulty
+                    // to know whether to flag full_block=true. Re-using
+                    // MinerNative.hash with count=1 + startNonce=w: if it
+                    // returns `w`, the hash meets net difficulty too.
+                    val checkBits = intArrayOf(0)
+                    val checkBuf  = ByteArray(32)
+                    val isFullBlock = if (netDifficulty > 0L) {
+                        val res = MinerNative.hash(hb, nonceOff,
+                            w.toLong() and 0xFFFFFFFFL, 1, netDifficulty,
+                            checkBuf, checkBits)
+                        res == (w.toLong() and 0xFFFFFFFFL)
+                    } else false
+                    val r = rpc.poolSubmit(poolUrlSnapshot, poolJobId, mineTo,
+                                           w.toLong() and 0xFFFFFFFFL, isFullBlock)
+                    val isBlock = r?.optBoolean("block") ?: false
+                    if (isBlock) blocksFound++
+                    android.util.Log.i(TAG, "pool_submit nonce=$w full=$isFullBlock -> " +
+                        if (r?.optBoolean("accepted") == true) "accepted${if (isBlock) " (BLOCK!)" else ""}" else "rejected")
+                } else {
+                    val block = tb.copyOf()
+                    block[nonceOff] = (w and 0xFF).toByte()
+                    block[nonceOff + 1] = ((w ushr 8) and 0xFF).toByte()
+                    block[nonceOff + 2] = ((w ushr 16) and 0xFF).toByte()
+                    block[nonceOff + 3] = ((w ushr 24) and 0xFF).toByte()
+                    val ok = rpc.submitBlock(bytesToHex(block))
+                    if (ok) blocksFound++
+                    android.util.Log.i(TAG, "submit_block nonce=$w -> ${if (ok) "OK (height ~$height)" else "rejected"}")
+                }
                 publish()
             }
         }
