@@ -1,0 +1,19 @@
+# Wrangler config for the Glaciem block explorer.
+#
+# Deploys explorer/public/ as a Cloudflare Worker at
+# https://glaciem-explorer.frostmine.workers.dev/. Pure static assets
+# (single HTML page + small client-side router); all chain data is
+# pulled from the existing public RPC proxy at
+# https://glaciem-rpc.frostmine.workers.dev/.
+#
+# To deploy after editing the HTML:
+#   cd explorer && npx wrangler deploy
+
+name = "glaciem-explorer"
+compatibility_date = "2026-05-22"
+
+[assets]
+directory = "./public"
+# SPA-style routing: unknown paths fall back to index.html so the
+# client-side router at /block/<h> and /tx/<h> still works.
+not_found_handling = "single-page-application"

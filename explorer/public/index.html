@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glaciem Explorer</title>
+<meta name="description" content="Block explorer for the Glaciem (GLAC) network.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0c11'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='900' font-size='18' fill='%233FC1E0'%3EG%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0c0c11; --bg2:#131319; --card:#1a1a22; --line:#26262f;
+  --amber:#3FC1E0; --amber-soft:#6dd4ee; --text:#f0f0f4; --dim:#8a8a99;
+  --good:#46c86e; --bad:#e65050;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;
+  line-height:1.55;min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+a.link{color:var(--amber-soft)}
+a.link:hover{color:var(--amber);text-decoration:underline}
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+.mono{font-family:var(--mono)}
+.dim{color:var(--dim)}
+.small{font-size:12px}
+
+/* ---- nav ---- */
+nav{
+  position:sticky;top:0;z-index:50;
+  background:rgba(12,12,17,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+nav .wrap{display:flex;align-items:center;gap:24px;height:64px;flex-wrap:wrap}
+.brand{font-family:var(--mono);font-weight:800;letter-spacing:.18em;color:var(--amber);font-size:17px}
+.brand small{color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.14em;margin-left:6px}
+.search{
+  flex:1;min-width:220px;
+  background:var(--bg2);border:1px solid var(--line);border-radius:10px;
+  display:flex;align-items:center;gap:8px;padding:8px 12px;
+  transition:border-color .12s;
+}
+.search:focus-within{border-color:var(--amber)}
+.search input{
+  flex:1;background:transparent;border:none;outline:none;color:var(--text);
+  font-family:var(--mono);font-size:13px;letter-spacing:.02em;
+}
+.search input::placeholder{color:var(--dim)}
+.search .hint{font-family:var(--mono);font-size:10px;color:var(--dim);letter-spacing:.1em}
+
+/* ---- sections ---- */
+section{padding:32px 0}
+h2{
+  font-family:var(--mono);font-weight:800;letter-spacing:.1em;
+  font-size:13px;color:var(--amber);margin-bottom:14px;
+}
+.subhead{color:var(--dim);font-size:12px;margin-bottom:18px}
+
+/* ---- stat cards ---- */
+.stats{
+  display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));
+  gap:12px;
+}
+.stat{
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:14px 16px;display:flex;flex-direction:column;gap:4px;
+}
+.stat .label{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--dim)}
+.stat .value{font-family:var(--mono);font-weight:800;font-size:18px;color:var(--text)}
+.stat .value.accent{color:var(--amber)}
+.stat .sub{font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+/* ---- tables ---- */
+.tbl{
+  width:100%;border-collapse:collapse;
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  overflow:hidden;
+}
+.tbl thead{background:rgba(63,193,224,0.04)}
+.tbl th, .tbl td{
+  padding:11px 14px;text-align:left;
+  border-bottom:1px solid rgba(38,38,47,.6);
+  font-family:var(--mono);font-size:12px;
+}
+.tbl th{
+  color:var(--dim);font-weight:700;letter-spacing:.1em;font-size:10px;
+}
+.tbl td.right, .tbl th.right{text-align:right}
+.tbl tr:last-child td{border-bottom:none}
+.tbl tbody tr{transition:background .1s}
+.tbl tbody tr:hover{background:rgba(63,193,224,0.04);cursor:pointer}
+.tbl tbody tr.placeholder:hover{background:transparent;cursor:default}
+.hash{
+  font-family:var(--mono);color:var(--amber-soft);
+  white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:280px;display:inline-block;vertical-align:middle;
+}
+.height-link{color:var(--amber);font-weight:700}
+
+/* ---- detail pages ---- */
+.detail-card{
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:24px;display:flex;flex-direction:column;gap:14px;
+}
+.detail-row{display:grid;grid-template-columns:160px 1fr;gap:14px;padding:6px 0;border-bottom:1px dashed rgba(38,38,47,.55)}
+.detail-row:last-child{border-bottom:none}
+.detail-row .label{
+  font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.08em;
+}
+.detail-row .value{
+  font-family:var(--mono);font-size:13px;color:var(--text);
+  word-break:break-all;
+}
+.detail-row .value .pill{
+  display:inline-block;padding:1px 7px;border-radius:4px;
+  background:rgba(63,193,224,0.1);color:var(--amber);font-size:10px;letter-spacing:.06em;
+  margin-left:6px;
+}
+
+/* ---- footer ---- */
+footer{
+  border-top:1px solid var(--line);padding:22px 0;text-align:center;
+  color:var(--dim);font-size:11px;margin-top:48px;
+}
+footer .mono{letter-spacing:.1em}
+
+/* ---- loading / error ---- */
+.loading{padding:32px;text-align:center;color:var(--dim);font-family:var(--mono);font-size:12px;letter-spacing:.1em}
+.error{
+  background:rgba(230,80,80,0.08);border:1px solid rgba(230,80,80,0.4);
+  border-radius:10px;padding:14px 18px;color:var(--bad);font-family:var(--mono);font-size:12px;
+}
+
+/* ---- responsive ---- */
+@media(max-width:720px){
+  nav .wrap{padding:12px 16px;height:auto}
+  .wrap{padding:0 16px}
+  .search{order:3;width:100%}
+  .stat .value{font-size:15px}
+  .tbl th, .tbl td{padding:9px 10px;font-size:11px}
+  .detail-row{grid-template-columns:1fr;gap:2px}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a href="/" class="brand">GLACIEM<small>EXPLORER</small></a>
+    <form class="search" id="search-form" action="javascript:void(0)">
+      <input id="search-input" type="text" autocomplete="off"
+             placeholder="search by height (e.g. 2316) or block/tx hash">
+      <span class="hint mono">↵ go</span>
+    </form>
+  </div>
+</nav>
+
+<main class="wrap" id="page"></main>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">GLACIEM EXPLORER · data from
+      <a href="https://glaciem-rpc.frostmine.workers.dev/stats" class="link">public RPC</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+// ============================================================
+// Glaciem block explorer -- single-file client-side app.
+//
+// Data flow:
+//   - All chain queries go to the existing public RPC proxy
+//     (glaciem-rpc.frostmine.workers.dev) -- CORS is enabled so we
+//     call it directly from the browser.
+//   - Restricted-RPC methods are used (get_info, get_block_headers_range,
+//     get_block_header_by_*, get_block, get_transactions). The proxy's
+//     cache layer (see cloudflare/glaciem-rpc-worker.js) handles the
+//     load -- this explorer doesn't add its own.
+//
+// Routing:
+//   /            -> home (stats + recent blocks)
+//   /block/:id   -> block detail (:id can be height or hash)
+//   /tx/:hash    -> tx detail
+//
+// SPA-style: the Worker's not_found_handling = "single-page-application"
+// returns index.html for any unknown path so the router below can take
+// over.
+// ============================================================
+
+const RPC = "https://glaciem-rpc.frostmine.workers.dev";
+const ATOMIC = 1e12;          // 1 RME = 10^12 atomic units
+const BLOCK_TIME = 120;       // target block time (seconds)
+const PAGE_BLOCKS = 25;       // how many recent blocks to show on home
+
+// ---- RPC helpers ----------------------------------------------------
+
+async function rpc(method, params = {}) {
+  const r = await fetch(RPC + "/json_rpc", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({jsonrpc:"2.0", id:"0", method, params}),
+  });
+  if (!r.ok) throw new Error(`RPC ${method} HTTP ${r.status}`);
+  const j = await r.json();
+  if (j.error) throw new Error(`RPC ${method}: ${j.error.message || j.error}`);
+  return j.result;
+}
+
+async function getTransactions(txHashes) {
+  // /get_transactions is a non-json_rpc endpoint that accepts
+  // {txs_hashes: [...], decode_as_json: true} and returns parsed tx info.
+  const r = await fetch(RPC + "/get_transactions", {
+    method: "POST",
+    headers: {"content-type": "application/json"},
+    body: JSON.stringify({txs_hashes: txHashes, decode_as_json: true}),
+  });
+  if (!r.ok) throw new Error(`get_transactions HTTP ${r.status}`);
+  return await r.json();
+}
+
+// ---- formatting helpers ---------------------------------------------
+
+const fmtNum = n => Number(n).toLocaleString("en-US");
+const fmtRme = a => (a / ATOMIC).toLocaleString("en-US", {maximumFractionDigits: 6}) + " RME";
+const fmtBytes = b => {
+  if (b < 1024) return `${b} B`;
+  if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
+  return `${(b/1024/1024).toFixed(2)} MB`;
+};
+const fmtTs = ts => {
+  const d = new Date(ts * 1000);
+  // 2026-05-22 20:31:18 UTC
+  const iso = d.toISOString().replace("T", " ").slice(0, 19);
+  return iso + " UTC";
+};
+const fmtAge = ts => {
+  const s = Math.max(0, Math.floor(Date.now()/1000 - ts));
+  if (s < 60) return `${s}s ago`;
+  if (s < 3600) return `${Math.floor(s/60)}m ${s%60}s ago`;
+  if (s < 86400) return `${Math.floor(s/3600)}h ${Math.floor((s%3600)/60)}m ago`;
+  return `${Math.floor(s/86400)}d ago`;
+};
+const shortHash = h => h ? h.slice(0, 16) + "…" + h.slice(-8) : "—";
+
+// ---- escape user-provided text (hashes etc) -------------------------
+const esc = s => String(s).replace(/[&<>"]/g, c => (
+  {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]
+));
+
+// ---- DOM helpers ----------------------------------------------------
+
+const page = () => document.getElementById("page");
+
+function setHTML(html) { page().innerHTML = html; }
+function loading(msg = "loading…") { setHTML(`<section><div class="loading">${esc(msg)}</div></section>`); }
+function showError(err) {
+  setHTML(`<section><div class="error">${esc(String(err.message || err))}</div></section>`);
+}
+
+// ---- routing --------------------------------------------------------
+
+function go(path) {
+  history.pushState(null, "", path);
+  render();
+}
+
+window.addEventListener("popstate", render);
+
+document.addEventListener("click", (e) => {
+  const a = e.target.closest("a[data-spa]");
+  if (!a) return;
+  e.preventDefault();
+  go(a.getAttribute("href"));
+});
+
+// ---- search ---------------------------------------------------------
+
+document.getElementById("search-form").addEventListener("submit", () => {
+  const v = document.getElementById("search-input").value.trim();
+  if (!v) return;
+  if (/^[0-9]+$/.test(v)) {
+    // pure number = block height
+    go(`/block/${v}`);
+  } else if (/^[0-9a-fA-F]{64}$/.test(v)) {
+    // 64-hex chars could be either a block hash or a tx hash. Try block
+    // first; if the lookup 404s the detail page will retry as a tx.
+    go(`/block/${v.toLowerCase()}`);
+  } else {
+    showError(new Error("Search must be a block height (number) or a 64-character hash."));
+  }
+});
+
+// ---- page renderers -------------------------------------------------
+
+async function renderHome() {
+  loading("loading chain state…");
+  try {
+    const info = await rpc("get_info");
+    const top = info.height - 1;
+    const start = Math.max(1, top - PAGE_BLOCKS + 1);
+    const r = await rpc("get_block_headers_range", {
+      start_height: start, end_height: top,
+    });
+    const headers = (r.headers || []).slice().reverse();
+    const hashrate = Math.round(info.difficulty / BLOCK_TIME);
+    const lastTs = headers[0] ? headers[0].timestamp : 0;
+    const ageStr = lastTs ? fmtAge(lastTs) : "—";
+
+    setHTML(`
+      <section>
+        <h2>NETWORK STATE</h2>
+        <div class="stats">
+          <div class="stat">
+            <span class="label">HEIGHT</span>
+            <span class="value accent">${fmtNum(info.height)}</span>
+            <span class="sub">latest block</span>
+          </div>
+          <div class="stat">
+            <span class="label">NETWORK HASHRATE</span>
+            <span class="value">${fmtNum(hashrate)} H/s</span>
+            <span class="sub">${(hashrate/1000).toFixed(2)} KH/s</span>
+          </div>
+          <div class="stat">
+            <span class="label">DIFFICULTY</span>
+            <span class="value">${fmtNum(info.difficulty)}</span>
+            <span class="sub">target ${BLOCK_TIME}s</span>
+          </div>
+          <div class="stat">
+            <span class="label">LAST BLOCK</span>
+            <span class="value">${ageStr}</span>
+            <span class="sub">tx pool ${info.tx_pool_size || 0}</span>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h2>RECENT BLOCKS</h2>
+        <table class="tbl" id="blocks-table">
+          <thead>
+            <tr>
+              <th>HEIGHT</th>
+              <th>AGE</th>
+              <th>HASH</th>
+              <th class="right">TXS</th>
+              <th class="right">SIZE</th>
+              <th class="right">REWARD</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${headers.map(h => `
+              <tr data-href="/block/${h.height}">
+                <td><a class="height-link" href="/block/${h.height}" data-spa>${fmtNum(h.height)}</a></td>
+                <td>${fmtAge(h.timestamp)}</td>
+                <td><span class="hash">${shortHash(h.hash)}</span></td>
+                <td class="right">${h.num_txes ?? 0}</td>
+                <td class="right">${fmtBytes(h.block_size || h.block_weight || 0)}</td>
+                <td class="right">${fmtRme(h.reward)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      </section>
+    `);
+
+    // Whole-row click navigates to the block detail page.
+    for (const tr of document.querySelectorAll("[data-href]")) {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest("a")) return;   // let direct link handle itself
+        go(tr.dataset.href);
+      });
+    }
+  } catch (err) {
+    showError(err);
+  }
+}
+
+async function renderBlock(id) {
+  loading("loading block…");
+  try {
+    // Decide whether id is a height (digits) or a hash (hex).
+    const isHeight = /^[0-9]+$/.test(id);
+    let header, full;
+    if (isHeight) {
+      const h = parseInt(id, 10);
+      header = (await rpc("get_block_header_by_height", {height: h})).block_header;
+      full   = await rpc("get_block", {height: h});
+    } else {
+      try {
+        header = (await rpc("get_block_header_by_hash", {hash: id})).block_header;
+        full   = await rpc("get_block", {hash: id});
+      } catch (e) {
+        // 64-hex but not a block hash -> try treating it as a tx hash.
+        return renderTx(id);
+      }
+    }
+    const blockJson = full.json ? JSON.parse(full.json) : null;
+    const txHashes  = (blockJson && blockJson.tx_hashes) || [];
+    const coinbaseTxHash = full.miner_tx_hash || (header && header.miner_tx_hash);
+
+    setHTML(`
+      <section>
+        <h2>BLOCK #${fmtNum(header.height)}</h2>
+        <div class="detail-card">
+          <div class="detail-row">
+            <span class="label">HASH</span>
+            <span class="value">${esc(header.hash)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">PREVIOUS BLOCK</span>
+            <span class="value">
+              <a class="link" href="/block/${esc(header.prev_hash)}" data-spa>${esc(header.prev_hash)}</a>
+            </span>
+          </div>
+          <div class="detail-row">
+            <span class="label">TIMESTAMP</span>
+            <span class="value">${esc(fmtTs(header.timestamp))} <span class="pill">${esc(fmtAge(header.timestamp))}</span></span>
+          </div>
+          <div class="detail-row">
+            <span class="label">DIFFICULTY</span>
+            <span class="value">${fmtNum(header.difficulty)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">CUMULATIVE DIFFICULTY</span>
+            <span class="value">${fmtNum(header.cumulative_difficulty)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">SIZE</span>
+            <span class="value">${fmtBytes(header.block_size || header.block_weight || 0)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">MINER REWARD</span>
+            <span class="value">${fmtRme(header.reward)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">NONCE</span>
+            <span class="value">${fmtNum(header.nonce)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">MAJOR / MINOR</span>
+            <span class="value">${header.major_version} / ${header.minor_version}</span>
+          </div>
+          ${coinbaseTxHash ? `
+          <div class="detail-row">
+            <span class="label">COINBASE TX</span>
+            <span class="value">
+              <a class="link" href="/tx/${esc(coinbaseTxHash)}" data-spa>${esc(coinbaseTxHash)}</a>
+            </span>
+          </div>` : ""}
+        </div>
+      </section>
+
+      <section>
+        <h2>TRANSACTIONS · ${txHashes.length + (coinbaseTxHash ? 1 : 0)}</h2>
+        <div class="subhead">RingCT hides senders, receivers, and amounts. Only the hash and (for non-coinbase) the fee/size are visible from on-chain.</div>
+        <table class="tbl">
+          <thead><tr><th>TYPE</th><th>HASH</th></tr></thead>
+          <tbody>
+            ${coinbaseTxHash ? `
+              <tr data-href="/tx/${esc(coinbaseTxHash)}">
+                <td><span class="pill" style="background:rgba(63,193,224,0.12);color:var(--amber);padding:2px 8px;border-radius:4px;font-size:10px;letter-spacing:.06em">COINBASE</span></td>
+                <td><span class="hash">${esc(coinbaseTxHash)}</span></td>
+              </tr>` : ""}
+            ${txHashes.map(h => `
+              <tr data-href="/tx/${esc(h)}">
+                <td><span class="dim">TX</span></td>
+                <td><span class="hash">${esc(h)}</span></td>
+              </tr>
+            `).join("")}
+            ${txHashes.length === 0 && !coinbaseTxHash ? `
+              <tr class="placeholder"><td colspan="2" class="dim">no transactions</td></tr>` : ""}
+          </tbody>
+        </table>
+      </section>
+    `);
+
+    for (const tr of document.querySelectorAll("[data-href]")) {
+      tr.addEventListener("click", (e) => {
+        if (e.target.closest("a")) return;
+        go(tr.dataset.href);
+      });
+    }
+  } catch (err) {
+    showError(err);
+  }
+}
+
+async function renderTx(hash) {
+  loading("loading transaction…");
+  try {
+    const r = await getTransactions([hash]);
+    const txStr = (r.txs && r.txs[0]) || (r.txs_as_hex && r.txs_as_hex[0] && {as_hex: r.txs_as_hex[0]});
+    if (!txStr) {
+      showError(new Error("Transaction not found. The chain may not have indexed it yet, or the hash is invalid."));
+      return;
+    }
+    const tx = r.txs[0];
+    let body = null;
+    try { body = tx.as_json ? JSON.parse(tx.as_json) : null; } catch (_) {}
+
+    const isCoinbase = body && body.vin && body.vin[0] && body.vin[0].gen !== undefined;
+    const ringSize = (body && body.vin && body.vin[0] && body.vin[0].key && body.vin[0].key.key_offsets)
+      ? body.vin[0].key.key_offsets.length : null;
+    const inCount  = body && body.vin ? body.vin.length : null;
+    const outCount = body && body.vout ? body.vout.length : null;
+
+    setHTML(`
+      <section>
+        <h2>TRANSACTION</h2>
+        <div class="detail-card">
+          <div class="detail-row">
+            <span class="label">HASH</span>
+            <span class="value">${esc(hash)}</span>
+          </div>
+          <div class="detail-row">
+            <span class="label">TYPE</span>
+            <span class="value">${isCoinbase ? '<span class="pill">COINBASE</span>' : "regular"}</span>
+          </div>
+          ${tx.block_height !== undefined ? `
+          <div class="detail-row">
+            <span class="label">IN BLOCK</span>
+            <span class="value">
+              <a class="link height-link" href="/block/${tx.block_height}" data-spa>#${fmtNum(tx.block_height)}</a>
+              ${tx.block_timestamp ? ` <span class="pill">${esc(fmtAge(tx.block_timestamp))}</span>` : ""}
+            </span>
+          </div>` : ""}
+          ${body && body.version !== undefined ? `
+          <div class="detail-row">
+            <span class="label">VERSION</span>
+            <span class="value">${body.version}</span>
+          </div>` : ""}
+          ${ringSize !== null ? `
+          <div class="detail-row">
+            <span class="label">RING SIZE</span>
+            <span class="value">${ringSize}</span>
+          </div>` : ""}
+          ${inCount !== null ? `
+          <div class="detail-row">
+            <span class="label">INPUTS</span>
+            <span class="value">${inCount}</span>
+          </div>` : ""}
+          ${outCount !== null ? `
+          <div class="detail-row">
+            <span class="label">OUTPUTS</span>
+            <span class="value">${outCount}</span>
+          </div>` : ""}
+          ${body && body.rct_signatures && body.rct_signatures.txnFee !== undefined ? `
+          <div class="detail-row">
+            <span class="label">FEE</span>
+            <span class="value">${fmtRme(body.rct_signatures.txnFee)}</span>
+          </div>` : ""}
+          ${tx.in_pool !== undefined ? `
+          <div class="detail-row">
+            <span class="label">CONFIRMATIONS</span>
+            <span class="value">${tx.confirmations ?? (tx.in_pool ? "0 (in pool)" : "—")}</span>
+          </div>` : ""}
+          <div class="detail-row">
+            <span class="label">PRIVACY NOTE</span>
+            <span class="value dim small">
+              Glaciem inherits Monero's RingCT privacy stack. Sender, receiver, and amount
+              are cryptographically hidden — the explorer can only show the metadata above.
+            </span>
+          </div>
+        </div>
+      </section>
+    `);
+  } catch (err) {
+    showError(err);
+  }
+}
+
+// ---- router ---------------------------------------------------------
+
+function render() {
+  const p = window.location.pathname;
+  let m;
+  if (p === "/" || p === "") {
+    renderHome();
+  } else if ((m = p.match(/^\/block\/([0-9a-fA-F]+)$/))) {
+    renderBlock(m[1]);
+  } else if ((m = p.match(/^\/tx\/([0-9a-fA-F]{64})$/))) {
+    renderTx(m[1].toLowerCase());
+  } else {
+    setHTML(`<section><div class="error">Unknown path. <a class="link" href="/" data-spa>go home →</a></div></section>`);
+  }
+}
+
+render();
+</script>
+</body>
+</html>
