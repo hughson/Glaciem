@@ -37,10 +37,12 @@ Protocol (all JSON):
 """
 
 import collections
+import ctypes
 import http.server
 import json
 import os
 import os.path
+import re
 import secrets
 import socketserver
 import struct
@@ -90,6 +92,130 @@ PAYOUT_MIXIN          = int(os.environ.get("PAYOUT_MIXIN", "15"))
 PAYOUT_PRIORITY       = int(os.environ.get("PAYOUT_PRIORITY", "0"))
 
 MAX_RECENT_JOBS = 8
+
+# ---- v1.1 hardening -----------------------------------------------------
+#
+# Share verification via the Lattice PoW shared library, cold-sweep of the
+# hot wallet, and stricter input validation.
+
+# Lattice verifier (pool_verify.c -> libpool_verify.so on this VM).
+VERIFY_LIB_PATH       = os.environ.get(
+    "VERIFY_LIB_PATH", "/root/libpool_verify.so")
+# After N invalid shares from the same wallet, drop further submissions.
+# Honest miners hit 0 invalid shares; cheaters hit this fast.
+INVALID_SHARE_BAN_AT  = int(os.environ.get("INVALID_SHARE_BAN_AT", "10"))
+# How many shares per wallet per second we'll accept (rate-limit spam).
+# At share_diff = network/1000 a single fast CPU does maybe 5-10 shares/s;
+# 60/s gives ridiculous headroom while still capping abuse.
+MAX_SHARES_PER_SEC    = float(os.environ.get("MAX_SHARES_PER_SEC", "60"))
+
+# Cold-sweep: every COLD_SWEEP_INTERVAL_S the pool's unlocked balance above
+# COLD_HOT_BUFFER_ATOMIC is transferred to COLD_ADDRESS. The hot wallet
+# never holds more than the buffer + immediate payout queue, so if the VM
+# is compromised the attacker only gets ~1 sweep window's worth.
+COLD_ADDRESS          = os.environ.get("COLD_ADDRESS", "").strip()
+COLD_HOT_BUFFER_ATOMIC = int(os.environ.get("COLD_HOT_BUFFER_ATOMIC",
+                                            str(50 * 10**12)))  # 50 GLAC
+COLD_SWEEP_INTERVAL_S  = int(os.environ.get("COLD_SWEEP_INTERVAL_S", "3600"))  # 1h
+
+# Wallet address validator. Rime mainnet addresses use the Monero scheme
+# adapted to R-prefix: 95 chars, base58 alphabet, leading 'R'. Integrated
+# addresses (106 chars, starting with R + i-character) are also accepted.
+# This is a sanity filter against accidental garbage / shell-meta tricks;
+# the daemon does the real cryptographic check on payout time.
+R_ADDR_RE = re.compile(r"^R[1-9A-HJ-NP-Za-km-z]{94,105}$")
+
+def is_valid_wallet(addr):
+    return isinstance(addr, str) and R_ADDR_RE.match(addr) is not None
+
+# ---- Lattice verifier handles ------------------------------------------
+
+_lattice = None
+try:
+    _lattice = ctypes.CDLL(VERIFY_LIB_PATH)
+    _lattice.pool_build_dataset.restype  = ctypes.c_void_p
+    _lattice.pool_build_dataset.argtypes = [ctypes.c_char_p]
+    _lattice.pool_free_dataset.argtypes  = [ctypes.c_void_p]
+    _lattice.pool_verify_share.restype   = ctypes.c_int
+    _lattice.pool_verify_share.argtypes  = [
+        ctypes.c_char_p, ctypes.c_int, ctypes.c_int,
+        ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint64,
+    ]
+except OSError as e:
+    print(f"[pool] WARNING: could not load {VERIFY_LIB_PATH}: {e}. "
+          "Falling back to v1 TRUST MODE.", file=sys.stderr)
+    _lattice = None
+
+# Dataset cache: seed_hash hex -> opaque pointer from pool_build_dataset().
+# Bounded -- LRU-evict oldest when we exceed MAX_CACHED_DATASETS.
+_datasets        = collections.OrderedDict()
+_datasets_lock   = threading.Lock()
+MAX_CACHED_DATASETS = 4
+
+
+def get_dataset_for(seed_hash_hex):
+    """Return the cached dataset pointer for `seed_hash_hex`, building it
+    lazily if needed. Returns None if verification is disabled (lib not
+    loaded) or seed is invalid."""
+    if _lattice is None:
+        return None
+    if not seed_hash_hex or len(seed_hash_hex) != 64:
+        return None
+    try:
+        seed = bytes.fromhex(seed_hash_hex)
+    except ValueError:
+        return None
+    with _datasets_lock:
+        if seed_hash_hex in _datasets:
+            # Move to end (most-recently-used).
+            _datasets.move_to_end(seed_hash_hex)
+            return _datasets[seed_hash_hex]
+        # Evict oldest if at capacity.
+        while len(_datasets) >= MAX_CACHED_DATASETS:
+            old_seed, old_ptr = _datasets.popitem(last=False)
+            _lattice.pool_free_dataset(old_ptr)
+        ptr = _lattice.pool_build_dataset(seed)
+        _datasets[seed_hash_hex] = ptr
+        return ptr
+
+
+def find_nonce_offset_buf(buf):
+    """Same logic as find_nonce_offset() but for an arbitrary buffer.
+    The daemon zeros the nonce slot in blockhashing_blob; we scan for
+    the first 4 zero bytes between offsets 34 and 80."""
+    for off in range(34, min(len(buf) - 4, 80)):
+        if buf[off] == 0 and buf[off+1] == 0 and buf[off+2] == 0 and buf[off+3] == 0:
+            return off
+    return 39
+
+
+def verify_share_against_job(job, nonce):
+    """Run the actual Lattice PoW check. Returns True/False. If the
+    verifier lib isn't loaded, returns True (v1 trust-mode fallback --
+    we'd rather accept than reject when crippled)."""
+    if _lattice is None:
+        return True
+    ds = get_dataset_for(job.get("seed_hash", ""))
+    if ds is None:
+        # No dataset available -- accept (better than locking miners out).
+        return True
+    blob_hex = job["blockhashing_blob"]
+    try:
+        blob = bytes.fromhex(blob_hex)
+    except ValueError:
+        return False
+    off = find_nonce_offset_buf(blob)
+    res = _lattice.pool_verify_share(
+        blob, len(blob), off, nonce & 0xFFFFFFFF,
+        ctypes.c_void_p(ds), job["share_difficulty"])
+    return res == 1
+
+
+# Per-wallet hardening state.
+_wallet_bans      = set()          # wallets we've banned for too many bad shares
+_wallet_bad_count = collections.defaultdict(int)
+_wallet_last_acc  = {}             # wallet -> last accept timestamp (rate limit)
+_hard_lock        = threading.Lock()
 
 
 # ---- in-memory state (protected by STATE_LOCK) ----------------------------
@@ -433,8 +559,11 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
     def _handle_job(self):
         body = self._read_json()
         wallet = body.get("wallet")
-        if not isinstance(wallet, str) or not wallet:
-            return self._send_json(400, {"error": "wallet required"})
+        if not is_valid_wallet(wallet):
+            return self._send_json(400, {"error": "invalid wallet address"})
+        with _hard_lock:
+            if wallet in _wallet_bans:
+                return self._send_json(403, {"error": "wallet banned for repeated invalid shares"})
         with STATE_LOCK:
             job = current_job
             if job is None:
@@ -461,9 +590,22 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         job_id = body.get("job_id")
         wallet = body.get("wallet")
         nonce  = body.get("nonce")
-        if not job_id or not wallet or not isinstance(nonce, int):
-            return self._send_json(400, {"error": "job_id, wallet, nonce required"})
+        if not job_id or not isinstance(nonce, int):
+            return self._send_json(400, {"error": "job_id and nonce required"})
+        if not is_valid_wallet(wallet):
+            return self._send_json(400, {"error": "invalid wallet address"})
         nonce &= 0xFFFFFFFF
+
+        # Hardening: check banlist + rate limit BEFORE doing PoW verify.
+        now = time.time()
+        with _hard_lock:
+            if wallet in _wallet_bans:
+                return self._send_json(403, {"error": "wallet banned for repeated invalid shares"})
+            last = _wallet_last_acc.get(wallet, 0.0)
+            min_gap = 1.0 / MAX_SHARES_PER_SEC
+            if now - last < min_gap:
+                return self._send_json(429, {"accepted": False, "reason": "rate limit"})
+
         with STATE_LOCK:
             job = recent_jobs.get(job_id)
             if job is None:
@@ -471,10 +613,35 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             dedupe_key = f"{wallet}:{nonce}"
             if dedupe_key in job["submissions"]:
                 return self._send_json(200, {"accepted": False, "reason": "duplicate"})
-            job["submissions"].add(dedupe_key)
-            # v1 TRUST MODE: credit the share without verifying.
-            credit_share(wallet)
+            # Snapshot the job under the lock so verify_share_against_job
+            # can run without holding STATE_LOCK (the hash is microseconds
+            # but we'd rather not block other threads).
+            job_snap = {
+                "blockhashing_blob": job["blockhashing_blob"],
+                "seed_hash":         job["seed_hash"],
+                "share_difficulty":  job["share_difficulty"],
+            }
             full_block = bool(body.get("full_block"))
+
+        # v1.1 hardening: Lattice-verify the share before crediting.
+        valid = verify_share_against_job(job_snap, nonce)
+        if not valid:
+            with _hard_lock:
+                _wallet_bad_count[wallet] += 1
+                bad = _wallet_bad_count[wallet]
+                if bad >= INVALID_SHARE_BAN_AT:
+                    _wallet_bans.add(wallet)
+                    print(f"[pool] BANNED {wallet[:12]}... after {bad} invalid shares",
+                          file=sys.stderr)
+            return self._send_json(200, {"accepted": False, "reason": "invalid share"})
+
+        # Valid share -- mark the dedupe key, credit, update rate-limit timestamp.
+        with STATE_LOCK:
+            job["submissions"].add(dedupe_key)
+            credit_share(wallet)
+        with _hard_lock:
+            _wallet_last_acc[wallet] = now
+
         if full_block:
             r = submit_block(job, nonce, wallet)
             return self._send_json(200, r)
@@ -500,6 +667,11 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                 "current_round_shares": pool_stats["current_round_shares"],
                 "last_block":           pool_stats["last_block"],
                 "uptime_s":             int(now - pool_stats["started_at"]),
+                # Hardening visibility -- lets the stats page advertise
+                # what the pool actually enforces.
+                "share_verification":   "lattice" if _lattice else "trust",
+                "cold_sweep_enabled":   bool(COLD_ADDRESS),
+                "banned_wallets_today": len(_wallet_bans),
                 "current_job": ({
                     "job_id":             current_job["job_id"],
                     "height":             current_job["height"],
@@ -703,6 +875,72 @@ def payout_loop():
             print(f"[pool] payout_loop error: {e}", file=sys.stderr)
 
 
+# ---- cold-sweep loop --------------------------------------------------
+#
+# Industry-standard hot-wallet hardening: every COLD_SWEEP_INTERVAL_S we
+# transfer the pool wallet's unlocked balance above COLD_HOT_BUFFER_ATOMIC
+# to COLD_ADDRESS (operator's offline wallet). The hot wallet never holds
+# more than ~one sweep window's worth of rewards, so a VM compromise
+# bounds the loss.
+#
+# The buffer keeps a small operating balance available for immediate
+# payouts; the sweep only touches "extra" funds.
+
+
+def cold_sweep_once():
+    if not COLD_ADDRESS:
+        return  # not configured; skip silently
+    if not is_valid_wallet(COLD_ADDRESS):
+        print(f"[pool] cold-sweep: COLD_ADDRESS doesn't look like a valid R-address; "
+              f"refusing to send", file=sys.stderr)
+        return
+    try:
+        bal = wallet_rpc("get_balance")
+    except Exception as e:
+        print(f"[pool] cold-sweep: get_balance failed: {e}", file=sys.stderr)
+        return
+    unlocked = int(bal.get("unlocked_balance", 0))
+    if unlocked <= COLD_HOT_BUFFER_ATOMIC:
+        return
+    amount = unlocked - COLD_HOT_BUFFER_ATOMIC
+    try:
+        r = wallet_rpc("transfer", {
+            "destinations": [{"amount": amount, "address": COLD_ADDRESS}],
+            "mixin":        PAYOUT_MIXIN,
+            "ring_size":    PAYOUT_MIXIN + 1,
+            "unlock_time":  0,
+            "priority":     PAYOUT_PRIORITY,
+            "get_tx_key":   True,
+        }, timeout=120)
+    except Exception as e:
+        print(f"[pool] cold-sweep transfer failed: {e}", file=sys.stderr)
+        return
+    fee = int(r.get("fee", 0))
+    tx  = r.get("tx_hash", "")
+    print(f"[pool] COLD SWEEP {amount/1e12:.4f} GLAC -> {COLD_ADDRESS[:12]}... "
+          f"fee={fee/1e12:.6f} GLAC tx={tx[:16]}...")
+    # Record in payouts log so /pool/payouts reflects sweeps too.
+    payouts_log = load_json_file(PAYOUTS_FILE, [])
+    payouts_log.append({
+        "ts":     int(time.time()),
+        "wallet": COLD_ADDRESS,
+        "atomic": amount,
+        "tx_hash": tx,
+        "tx_fee_atomic": fee,
+        "kind":   "cold_sweep",
+    })
+    save_json_atomic(PAYOUTS_FILE, payouts_log)
+
+
+def cold_sweep_loop():
+    while True:
+        time.sleep(COLD_SWEEP_INTERVAL_S)
+        try:
+            cold_sweep_once()
+        except Exception as e:
+            print(f"[pool] cold_sweep_loop error: {e}", file=sys.stderr)
+
+
 # ---- entry point ---------------------------------------------------------
 
 def main():
@@ -721,6 +959,9 @@ def main():
     payouter = threading.Thread(target=payout_loop, name="payout", daemon=True)
     payouter.start()
 
+    sweeper = threading.Thread(target=cold_sweep_loop, name="cold-sweep", daemon=True)
+    sweeper.start()
+
     server = ThreadedHTTPServer(("0.0.0.0", POOL_PORT), PoolHandler)
     print(f"[pool] listening on 0.0.0.0:{POOL_PORT}")
     print(f"[pool] daemon RPC: {DAEMON_RPC}")
@@ -730,6 +971,14 @@ def main():
     print(f"[pool] fee: {POOL_FEE_PERCENT}%")
     print(f"[pool] min payout: {MIN_PAYOUT_ATOMIC/1e12:.4f} GLAC, "
           f"payout interval: {PAYOUT_INTERVAL_S}s")
+    print(f"[pool] verify lib: {VERIFY_LIB_PATH} "
+          f"({'LOADED' if _lattice else 'NOT LOADED -- trust mode'})")
+    if COLD_ADDRESS:
+        print(f"[pool] cold sweep: every {COLD_SWEEP_INTERVAL_S}s, "
+              f"buffer={COLD_HOT_BUFFER_ATOMIC/1e12:.0f} GLAC, "
+              f"-> {COLD_ADDRESS[:12]}...")
+    else:
+        print(f"[pool] cold sweep: DISABLED (set COLD_ADDRESS env var to enable)")
     try:
         server.serve_forever()
     except KeyboardInterrupt:
