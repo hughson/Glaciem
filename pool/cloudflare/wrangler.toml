@@ -1,0 +1,25 @@
+# Wrangler config for the Glaciem pool Worker.
+#
+# Deploys at https://glaciem-pool.frostmine.workers.dev/.
+#
+# Responsibilities:
+#   1. Proxy /pool/* API calls to the pool-server on glaciem-node
+#      (the Hetzner VM, port 8088). CORS-friendly, Cloudflare in front
+#      means we get free DDoS shield + edge caching for read-only GETs.
+#   2. Serve a static stats page at / (no chain queries from the page;
+#      it polls /pool/stats and /pool/blocks for live data).
+#
+# The pool-server itself does all the share/credit logic; this worker
+# is just transport.
+
+name = "glaciem-pool"
+main = "pool-worker.js"
+compatibility_date = "2026-05-22"
+
+[assets]
+directory = "./public"
+binding = "ASSETS"
+# Unknown paths fall through to the worker (which decides whether to
+# proxy or 404). Lets /pool/* hit the worker code path while / and any
+# real static asset serves directly.
+run_worker_first = ["/pool/*"]

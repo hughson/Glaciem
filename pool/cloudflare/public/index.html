@@ -1,0 +1,279 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Glaciem Pool</title>
+<meta name="description" content="Official Glaciem (GLAC) mining pool.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0c11'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='900' font-size='18' fill='%233FC1E0'%3EP%3C/text%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#0c0c11; --bg2:#131319; --card:#1a1a22; --line:#26262f;
+  --amber:#3FC1E0; --amber-soft:#6dd4ee; --text:#f0f0f4; --dim:#8a8a99;
+  --good:#46c86e; --bad:#e65050;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{
+  background:var(--bg);color:var(--text);font-family:var(--sans);font-size:14px;
+  line-height:1.55;min-height:100vh;-webkit-font-smoothing:antialiased;
+}
+a{color:inherit;text-decoration:none}
+a.link{color:var(--amber-soft)}
+a.link:hover{color:var(--amber);text-decoration:underline}
+.wrap{max-width:1100px;margin:0 auto;padding:0 24px}
+.mono{font-family:var(--mono)}
+.dim{color:var(--dim)}
+.small{font-size:12px}
+
+nav{
+  position:sticky;top:0;z-index:50;
+  background:rgba(12,12,17,.86);backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+}
+nav .wrap{display:flex;align-items:center;gap:24px;height:64px;flex-wrap:wrap}
+.brand{font-family:var(--mono);font-weight:800;letter-spacing:.18em;color:var(--amber);font-size:17px}
+.brand small{color:var(--dim);font-weight:600;font-size:10px;letter-spacing:.14em;margin-left:6px}
+.navlinks{margin-left:auto;display:flex;gap:18px}
+.navlinks a{color:var(--dim);font-size:12px;font-family:var(--mono);letter-spacing:.1em;transition:color .15s}
+.navlinks a:hover{color:var(--text)}
+
+section{padding:32px 0}
+h2{font-family:var(--mono);font-weight:800;letter-spacing:.1em;font-size:13px;color:var(--amber);margin-bottom:14px}
+.subhead{color:var(--dim);font-size:12px;margin-bottom:18px}
+
+.stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:12px}
+.stat{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;display:flex;flex-direction:column;gap:4px}
+.stat .label{font-family:var(--mono);font-size:10px;letter-spacing:.14em;color:var(--dim)}
+.stat .value{font-family:var(--mono);font-weight:800;font-size:18px;color:var(--text)}
+.stat .value.accent{color:var(--amber)}
+.stat .sub{font-family:var(--mono);font-size:10px;color:var(--dim)}
+
+.lookup{
+  background:var(--card);border:1px solid var(--line);border-radius:12px;
+  padding:18px 20px;display:flex;flex-direction:column;gap:14px;
+}
+.lookup .row{display:flex;gap:8px;flex-wrap:wrap}
+.lookup input{
+  flex:1;min-width:240px;background:var(--bg2);border:1px solid var(--line);
+  border-radius:8px;color:var(--text);font-family:var(--mono);font-size:12px;
+  padding:10px 12px;
+}
+.lookup input:focus{outline:none;border-color:var(--amber)}
+.lookup button{
+  background:var(--amber);color:var(--bg);border:none;border-radius:8px;
+  padding:10px 18px;font-family:var(--mono);font-size:11px;font-weight:800;
+  letter-spacing:.1em;cursor:pointer;
+}
+.lookup button:hover{background:var(--amber-soft)}
+.miner-result{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:8px}
+.miner-result .m{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:10px}
+.miner-result .m .l{font-family:var(--mono);font-size:9px;letter-spacing:.12em;color:var(--dim)}
+.miner-result .m .v{font-family:var(--mono);font-size:14px;font-weight:700;color:var(--text);margin-top:2px}
+.miner-result .m .v.accent{color:var(--amber)}
+
+.tbl{width:100%;border-collapse:collapse;background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden}
+.tbl thead{background:rgba(63,193,224,0.04)}
+.tbl th,.tbl td{padding:11px 14px;text-align:left;border-bottom:1px solid rgba(38,38,47,.6);font-family:var(--mono);font-size:12px}
+.tbl th{color:var(--dim);font-weight:700;letter-spacing:.1em;font-size:10px}
+.tbl td.right,.tbl th.right{text-align:right}
+.tbl tr:last-child td{border-bottom:none}
+.hash{font-family:var(--mono);color:var(--amber-soft);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:260px;display:inline-block;vertical-align:middle}
+
+.connect-card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:20px 22px}
+.connect-card pre{background:var(--bg2);border:1px solid var(--line);border-radius:8px;padding:12px;font-family:var(--mono);font-size:11px;color:var(--text);overflow-x:auto;line-height:1.7;margin-top:10px}
+.connect-card pre .k{color:var(--dim)}
+.connect-card pre .v{color:var(--amber)}
+
+footer{border-top:1px solid var(--line);padding:22px 0;text-align:center;color:var(--dim);font-size:11px;margin-top:48px}
+
+.warning{
+  background:rgba(63,193,224,0.06);border:1px solid rgba(63,193,224,0.3);
+  border-radius:10px;padding:14px 18px;font-size:12px;line-height:1.6;
+}
+.warning strong{color:var(--amber)}
+
+@media(max-width:720px){
+  .wrap{padding:0 16px}
+  nav .wrap{padding:12px 16px;height:auto}
+  .stat .value{font-size:15px}
+  .tbl th,.tbl td{padding:9px 10px;font-size:11px}
+}
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="wrap">
+    <a href="/" class="brand">GLACIEM<small>POOL</small></a>
+    <div class="navlinks">
+      <a href="https://glaciem.frostmine.workers.dev/">Main</a>
+      <a href="https://glaciem-explorer.frostmine.workers.dev/">Explorer</a>
+      <a href="https://glaciem.frostmine.workers.dev/#download">Miners</a>
+    </div>
+  </div>
+</nav>
+
+<main class="wrap">
+
+  <section>
+    <h2>POOL STATE</h2>
+    <div class="stats" id="stats-grid">
+      <div class="stat"><span class="label">POOL HASHRATE</span><span class="value accent" id="s-hashrate">—</span><span class="sub" id="s-hashrate-sub">loading…</span></div>
+      <div class="stat"><span class="label">ACTIVE MINERS</span><span class="value" id="s-miners">—</span><span class="sub">last 5 min</span></div>
+      <div class="stat"><span class="label">BLOCKS TODAY</span><span class="value" id="s-blocks-today">—</span><span class="sub" id="s-blocks-total">— total</span></div>
+      <div class="stat"><span class="label">CHAIN HEIGHT</span><span class="value" id="s-height">—</span><span class="sub" id="s-share-diff">share diff —</span></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>HOW TO CONNECT</h2>
+    <div class="connect-card">
+      <p class="dim small">In your Glaciem Miner v1.1.6+ (Mac / Win / Android / Linux):</p>
+      <pre><span class="k">Settings → Mining mode:</span> <span class="v">POOL</span>
+<span class="k">Pool URL:           </span> <span class="v" id="connect-url">https://glaciem-pool.frostmine.workers.dev</span>
+<span class="k">Payout address:     </span> <span class="v">your wallet (auto-filled from your embedded wallet)</span></pre>
+      <p class="dim small" style="margin-top:14px;">
+        Or use any other Glaciem-compatible pool by entering its URL there.
+        <br>Auto-payout threshold: <span class="mono" style="color:var(--amber)">0.1 GLAC</span>.
+        Pool fee: <span class="mono" style="color:var(--amber)" id="connect-fee">0%</span>.
+      </p>
+    </div>
+  </section>
+
+  <section>
+    <h2>YOUR STATS</h2>
+    <div class="subhead">Paste your payout wallet address to see your contribution and pending payout.</div>
+    <div class="lookup">
+      <div class="row">
+        <input id="lookup-input" type="text" placeholder="paste your Glaciem (R...) wallet address" autocomplete="off">
+        <button id="lookup-btn" type="button">LOOK UP</button>
+      </div>
+      <div id="lookup-result"></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>RECENT BLOCKS FOUND BY POOL</h2>
+    <table class="tbl">
+      <thead><tr>
+        <th>HEIGHT</th><th>WHEN</th><th>FINDER</th><th class="right">REWARD</th>
+      </tr></thead>
+      <tbody id="blocks-tbody"><tr><td colspan="4" class="dim">loading…</td></tr></tbody>
+    </table>
+  </section>
+
+  <section>
+    <h2>SECURITY NOTE — v1</h2>
+    <div class="warning">
+      <strong>Trust-mode share validation.</strong> v1 of this pool counts shares as miners submit them without re-verifying the Lattice proof-of-work server-side. Fine for the small early network; a dishonest miner could falsely claim shares. Server-side verification ships with v2.
+      <br><br>
+      <strong>Hot wallet.</strong> Block rewards land in a wallet hosted on the same VM as the pool. Industry standard, but if the VM is compromised the attacker gets whatever balance is sitting there. Operator sweeps accumulated balance to a cold address regularly.
+    </div>
+  </section>
+
+</main>
+
+<footer>
+  <div class="wrap">
+    <span class="mono">GLACIEM POOL · powered by
+      <a class="link" href="https://github.com/hughson/Glaciem">github.com/hughson/Glaciem</a>
+    </span>
+  </div>
+</footer>
+
+<script>
+const API = "";          // same origin -- the worker proxies /pool/* to the origin
+const REFRESH_MS = 10000;
+
+const $ = id => document.getElementById(id);
+const esc = s => String(s).replace(/[&<>"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
+
+const fmtRate  = h => h >= 1000 ? (h/1000).toFixed(2) + " KH/s" : h + " H/s";
+const fmtGlac  = a => (a / 1e12).toLocaleString("en-US", {maximumFractionDigits: 6}) + " GLAC";
+const fmtAge   = ts => {
+  const s = Math.max(0, Math.floor(Date.now()/1000 - ts));
+  if (s < 60) return s + "s ago";
+  if (s < 3600) return Math.floor(s/60) + "m ago";
+  if (s < 86400) return Math.floor(s/3600) + "h ago";
+  return Math.floor(s/86400) + "d ago";
+};
+const shortHash = h => h ? h.slice(0,12) + "…" + h.slice(-6) : "—";
+
+async function fetchStats() {
+  try {
+    const r = await fetch(API + "/pool/stats");
+    const d = await r.json();
+    $("s-hashrate").textContent = fmtRate(d.hashrate || 0);
+    $("s-hashrate-sub").textContent = d.share_diff_divisor + "× easier per share";
+    $("s-miners").textContent = d.active_miners ?? 0;
+    $("s-blocks-today").textContent = d.blocks_today ?? 0;
+    $("s-blocks-total").textContent = (d.blocks_total ?? 0) + " total";
+    $("s-height").textContent = d.current_job ? d.current_job.height.toLocaleString() : "—";
+    $("s-share-diff").textContent = d.current_job ? `share diff ${d.current_job.share_difficulty.toLocaleString()}` : "share diff —";
+    $("connect-fee").textContent = (d.pool_fee_percent ?? 0) + "%";
+  } catch (e) {
+    console.warn("stats fetch failed:", e);
+  }
+}
+
+async function fetchBlocks() {
+  try {
+    const r = await fetch(API + "/pool/blocks?limit=15");
+    const d = await r.json();
+    const tbody = $("blocks-tbody");
+    if (!d.blocks || d.blocks.length === 0) {
+      tbody.innerHTML = `<tr><td colspan="4" class="dim">no blocks found by the pool yet</td></tr>`;
+      return;
+    }
+    tbody.innerHTML = d.blocks.map(b => `
+      <tr>
+        <td><a class="link" href="https://glaciem-explorer.frostmine.workers.dev/block/${b.height}">${esc(String(b.height))}</a></td>
+        <td>${esc(fmtAge(b.ts))}</td>
+        <td><span class="hash">${esc(shortHash(b.finder))}</span></td>
+        <td class="right">${esc(fmtGlac(b.reward_atomic || 0))}</td>
+      </tr>
+    `).join("");
+  } catch (e) {
+    console.warn("blocks fetch failed:", e);
+  }
+}
+
+async function lookupMiner() {
+  const v = $("lookup-input").value.trim();
+  const out = $("lookup-result");
+  if (!v) { out.innerHTML = ""; return; }
+  out.innerHTML = `<div class="dim small">looking up…</div>`;
+  try {
+    const r = await fetch(API + "/pool/miner/" + encodeURIComponent(v));
+    const d = await r.json();
+    if (!d.found) {
+      out.innerHTML = `<div class="dim small">no shares from this wallet yet. Start mining and try again in a minute.</div>`;
+      return;
+    }
+    out.innerHTML = `
+      <div class="miner-result">
+        <div class="m"><div class="l">HASHRATE</div><div class="v accent">${fmtRate(d.hashrate || 0)}</div></div>
+        <div class="m"><div class="l">PENDING PAYOUT</div><div class="v accent">${fmtGlac(d.pending_atomic || 0)}</div></div>
+        <div class="m"><div class="l">SHARES TODAY</div><div class="v">${(d.shares_today||0).toLocaleString()}</div></div>
+        <div class="m"><div class="l">SHARES TOTAL</div><div class="v">${(d.shares_total||0).toLocaleString()}</div></div>
+        <div class="m"><div class="l">THIS ROUND</div><div class="v">${(d.shares_this_round||0).toLocaleString()}</div></div>
+        <div class="m"><div class="l">BLOCKS FOUND</div><div class="v">${d.blocks_found||0}</div></div>
+        <div class="m"><div class="l">LAST SHARE</div><div class="v">${d.last_share_s_ago === null ? "—" : (d.last_share_s_ago + "s ago")}</div></div>
+      </div>
+    `;
+  } catch (e) {
+    out.innerHTML = `<div class="dim small">lookup failed: ${esc(e.message)}</div>`;
+  }
+}
+
+$("lookup-btn").addEventListener("click", lookupMiner);
+$("lookup-input").addEventListener("keydown", e => { if (e.key === "Enter") lookupMiner(); });
+
+// Initial + periodic refresh
+fetchStats(); fetchBlocks();
+setInterval(() => { fetchStats(); fetchBlocks(); }, REFRESH_MS);
+</script>
+</body>
+</html>
