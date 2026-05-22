@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Privacy — Glaciem</title>
+<meta name="description" content="What Glaciem can and can't guarantee about your privacy at each layer — blockchain, our code, the CDN, and the network underneath.">
+<meta name="theme-color" content="#0c0c11">
+<link rel="canonical" href="https://glaciem.frostmine.workers.dev/privacy">
+<style>
+  :root{
+    --bg:#0c0c11; --bg2:#131319; --card:#1a1a22; --line:#26262f;
+    --amber:#3FC1E0; --amber-soft:#6dd4ee; --text:#f0f0f4; --dim:#a0a0b0;
+    --green:#46c86e; --red:#e65050; --yellow:#d4a13b;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html{scroll-behavior:smooth}
+  body{
+    background:var(--bg); color:var(--text); font-family:var(--sans);
+    line-height:1.65; -webkit-font-smoothing:antialiased;
+  }
+  a{color:var(--amber);text-decoration:none}
+  a:hover{text-decoration:underline}
+  .wrap{max-width:760px;margin:0 auto;padding:0 24px}
+  .mono{font-family:var(--mono);font-size:.92em}
+
+  nav{
+    position:sticky;top:0;z-index:50;
+    background:rgba(12,12,17,.82);backdrop-filter:blur(10px);
+    border-bottom:1px solid var(--line);
+  }
+  nav .wrap{display:flex;align-items:center;justify-content:space-between;height:60px}
+  .brand{font-family:var(--mono);font-weight:800;letter-spacing:.18em;color:var(--amber);font-size:18px}
+  .navlinks a{color:var(--dim);font-size:13px;margin-left:26px;transition:color .15s}
+  .navlinks a:hover{color:var(--text);text-decoration:none}
+
+  main{padding:64px 0 96px}
+  h1{
+    font-family:var(--mono);font-weight:800;letter-spacing:.04em;
+    font-size:34px;line-height:1.15;margin-bottom:10px;
+  }
+  .updated{font-family:var(--mono);font-size:12px;color:var(--dim);
+    letter-spacing:.08em;margin-bottom:36px}
+  h2{
+    font-family:var(--mono);font-weight:800;font-size:18px;
+    letter-spacing:.06em;color:var(--amber);margin:42px 0 14px;
+  }
+  p{margin:0 0 14px;color:var(--text)}
+  p.dim{color:var(--dim);font-size:.94em}
+  ul{margin:8px 0 14px 24px}
+  li{margin:6px 0}
+  code{font-family:var(--mono);background:var(--bg2);padding:2px 6px;
+    border-radius:4px;font-size:.92em;color:var(--amber-soft)}
+  pre{background:var(--bg2);border:1px solid var(--line);border-radius:8px;
+    padding:14px 16px;overflow-x:auto;font-family:var(--mono);font-size:13px;
+    line-height:1.55;margin:12px 0 18px;color:var(--text)}
+
+  table.layers{
+    width:100%;border-collapse:collapse;margin:14px 0 24px;
+    font-size:14px;
+  }
+  table.layers th, table.layers td{
+    text-align:left;vertical-align:top;
+    padding:12px 14px;border-bottom:1px solid var(--line);
+  }
+  table.layers th{
+    font-family:var(--mono);font-size:11px;letter-spacing:.1em;
+    color:var(--dim);background:var(--bg2);font-weight:600;
+  }
+  .good{color:var(--green);font-weight:600}
+  .partial{color:var(--yellow);font-weight:600}
+  .limit{color:var(--red);font-weight:600}
+
+  footer{
+    border-top:1px solid var(--line);padding:30px 0;text-align:center;
+    color:var(--dim);font-size:13px;font-family:var(--mono);
+  }
+</style>
+</head>
+<body>
+
+<nav><div class="wrap">
+  <a href="/" class="brand">GLACIEM</a>
+  <div class="navlinks">
+    <a href="/">Home</a>
+    <a href="/#download">Download</a>
+    <a href="https://github.com/hughson/Glaciem">GitHub</a>
+  </div>
+</div></nav>
+
+<main><div class="wrap">
+
+<h1>Privacy at Glaciem</h1>
+<p class="updated">Last updated: 2026-05-22</p>
+
+<p>Glaciem is a privacy cryptocurrency. The privacy guarantees the project
+inherits from Monero are real — but they are <em>not</em> the same at every
+layer of the system. This page is an honest accounting of what we can and
+can't guarantee, so you can make informed choices.</p>
+
+<h2>The layers</h2>
+
+<table class="layers">
+  <tr>
+    <th style="width:34%">Layer</th>
+    <th style="width:18%">Privacy</th>
+    <th>What that means</th>
+  </tr>
+  <tr>
+    <td><strong>On-chain</strong> (the GLAC blockchain itself)</td>
+    <td><span class="good">Strong</span></td>
+    <td>Sender, recipient, and transaction amount are all hidden through
+        stealth addresses, ring signatures, and RingCT — Monero's
+        well-audited cryptography, used as-is. Anyone observing the chain
+        sees only that <em>some</em> transaction occurred, not who or
+        for how much.</td>
+  </tr>
+  <tr>
+    <td><strong>In-browser wallet generation</strong>
+        (the wallet you make on <a href="https://glacwordmine.frostmine.workers.dev">glacwordmine</a>)</td>
+    <td><span class="good">Strong</span></td>
+    <td>Keys are generated entirely in your browser using
+        <code>crypto.getRandomValues</code>. The seed is shown to you once
+        and never transmitted to any server. We don't store it; we don't
+        log it; we can't recover it for you. <a href="https://github.com/hughson/Glaciem/blob/main/wordmine/public/lib/wallet.js">Source</a>.</td>
+  </tr>
+  <tr>
+    <td><strong>Our Worker code</strong>
+        (<code>glaciem-rpc.frostmine.workers.dev</code>)</td>
+    <td><span class="good">No tracking</span></td>
+    <td>Our code does not log IP addresses, wallet addresses, or per-user
+        data. It writes a daily-rotated SHA-256 fingerprint to KV for the
+        sole purpose of counting unique miners — this can't be reversed
+        to an IP and auto-expires in 7 days. Wallet addresses inside RPC
+        bodies are passed through untouched. <a href="https://github.com/hughson/Glaciem/blob/main/cloudflare/glaciem-rpc-worker.js">Source</a>.</td>
+  </tr>
+  <tr>
+    <td><strong>Cloudflare (the CDN underneath)</strong></td>
+    <td><span class="partial">Limited</span></td>
+    <td>Cloudflare sits in front of the Worker as a CDN, DDoS shield, and
+        TLS terminator. They see and retain request metadata (source IP,
+        timestamps, request paths) as part of standard CDN operation. This
+        is the same trade-off any website behind Cloudflare makes. We do
+        not have a special arrangement that hides this from them; nor do
+        they share it with us in a way that maps to identity. If you mine
+        through our Worker, Cloudflare can see that <em>your IP</em> hit
+        our endpoint.</td>
+  </tr>
+  <tr>
+    <td><strong>Hetzner (the VPS provider)</strong></td>
+    <td><span class="partial">Limited</span></td>
+    <td>Our two relay nodes run on Hetzner VMs. Hetzner sees inbound
+        traffic to those VMs (IP-level). They don't see RPC bodies (TLS
+        is terminated at Cloudflare, but the connection from Cloudflare
+        to the VM is over plain HTTP on the internal network). The VMs
+        themselves do not log RPC client IPs.</td>
+  </tr>
+  <tr>
+    <td><strong>Network layer</strong>
+        (how packets reach our infrastructure)</td>
+    <td><span class="limit">Not by default</span></td>
+    <td>Without something like Tor or I2P, your ISP, your government, and
+        any AS in between can see that you connected to
+        <code>glaciem-rpc.frostmine.workers.dev</code>. This is true of any
+        web service. See below for opt-outs.</td>
+  </tr>
+</table>
+
+<h2>What this means in practice</h2>
+
+<p><strong>If you only care about who can see your on-chain activity:</strong>
+nothing here changes the Monero-level privacy guarantee. Your transaction
+amounts, senders, and recipients are hidden from the chain itself.</p>
+
+<p><strong>If you also care about who can see that you mine GLAC:</strong>
+Cloudflare can see this. Your ISP can see this. The pragmatic mitigation
+is to mine over Tor (next section).</p>
+
+<p><strong>If you want neither us nor Cloudflare in the path:</strong>
+run your own <code>rimed</code> node and mine against your own daemon's
+RPC. The miner apps' built-in peer discovery will let you target a
+direct node by IP if you prefer — or you can skip our infrastructure
+entirely.</p>
+
+<h2>Opt-outs and stronger setups</h2>
+
+<p>For users who want network-level privacy too:</p>
+
+<ul>
+  <li><strong>Mine over Tor.</strong> The Linux miner can be routed through
+      Tor with <code>torsocks ./glaciem-miner</code>. This hides your IP
+      from Cloudflare and from the relay nodes; they'll see a Tor exit
+      relay's IP instead of yours.</li>
+  <li><strong>Run your own node.</strong> Glaciem is open source. Building
+      <code>rimed</code> from source takes ~15 minutes
+      (<a href="https://github.com/hughson/Glaciem/blob/main/BUILD_LINUX.md">instructions</a>).
+      Mining against your own daemon eliminates our Worker from your data
+      path entirely.</li>
+  <li><strong>Use a VPN.</strong> Lower-effort than Tor; still removes your
+      direct ISP from the picture. Doesn't help against the VPN provider
+      itself.</li>
+</ul>
+
+<h2>What we never store</h2>
+
+<ul>
+  <li>Your wallet address. The RPC bodies you send to our Worker contain
+      it, but our code does not read or log it — we just forward the
+      bytes.</li>
+  <li>Your seed phrase. Wallets generated on
+      <a href="https://glacwordmine.frostmine.workers.dev">glacwordmine</a>
+      live and die in your browser. We could not give you a forgotten
+      seed back even if subpoenaed.</li>
+  <li>Your raw IP address. We can't help that Cloudflare sees it; we just
+      don't write it down ourselves. The fingerprint we use for
+      unique-miner counting is salted SHA-256 with the salt rotating each
+      UTC day.</li>
+  <li>Any link between fingerprints and identities. We don't know which
+      fingerprint paid for what, which fingerprint mined which block,
+      etc. The fingerprint is write-only from our perspective.</li>
+</ul>
+
+<h2>What's published</h2>
+
+<p>The only aggregate Glaciem itself publishes is the unique-miner total
+per day, available at
+<a href="https://glaciem-rpc.frostmine.workers.dev/stats">/stats</a>.
+The response is a single number plus per-node hit counts. There is no
+country, region, or per-miner breakdown.</p>
+
+<h2>Reach</h2>
+
+<p>If you spot something here that's wrong or could be tightened, please
+open an issue at
+<a href="https://github.com/hughson/Glaciem/issues">github.com/hughson/Glaciem/issues</a>.
+This page is a living document.</p>
+
+</div></main>
+
+<footer><div class="wrap">
+  Glaciem — BSD 3-Clause, forked from the Monero Project.<br>
+  <a href="/" style="color:var(--dim)">Home</a> &nbsp;·&nbsp;
+  <a href="https://github.com/hughson/Glaciem" style="color:var(--dim)">GitHub</a>
+</div></footer>
+
+</body>
+</html>
