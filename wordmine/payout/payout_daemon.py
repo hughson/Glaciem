@@ -131,9 +131,15 @@ def update_balance():
     if err:
         print(f'[balance] wallet rpc error: {err}', flush=True)
         return
-    atomic = res.get('unlocked_balance', 0)
-    bal = atomic / 1e12
-    kv_put('faucet:balance', {'balance': bal, 'at': int(time.time() * 1000)},
+    # Push BOTH total and unlocked. Worker displays total (so the site
+    # doesn't flash 0 after a payout locks the change for 10 blocks) but
+    # caps max_reward by unlocked (so we never promise a payout we can't
+    # actually transfer right now).
+    total = res.get('balance', 0) / 1e12
+    unlocked = res.get('unlocked_balance', 0) / 1e12
+    kv_put('faucet:balance',
+           {'balance': total, 'unlocked': unlocked,
+            'at': int(time.time() * 1000)},
            ttl=600)
 
 def process_claims():
@@ -158,9 +164,17 @@ def process_claims():
             continue
         address = rec.get('address', '')
         print(f'[pay] {claim_id} -> {amount} -> {address[:14]}…', flush=True)
+        # subaddr_indices [1..5] restricts coin selection to the five
+        # service subaddresses created by faucet_split.py. The anchor at
+        # subaddress 0 (~800 GLAC) is intentionally OFF-limits to payouts
+        # so that the unlocked-balance display stays high during the
+        # ~20-min change-output lock window. Without this hint the wallet
+        # prefers the biggest output (the anchor) to minimize fees and
+        # the lock would drag max_reward down to ~0.3.
         res, err = wallet('transfer', {
             'destinations': [{'amount': amount, 'address': address}],
             'account_index': 0,
+            'subaddr_indices': [1, 2, 3, 4, 5],
             'priority': 0,
             'get_tx_key': True,
         })
