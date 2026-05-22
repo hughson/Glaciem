@@ -280,6 +280,26 @@
     </div>
   </section>
 
+  <!-- CHANGE-ADDRESS CONFIRMATION (prevents accidental wallet loss) -->
+  <section id="wallet-change-confirm" class="panel" hidden>
+    <h2>REPLACE THIS ADDRESS?</h2>
+    <p class="dim warn">If you have GLAC at the current address and you don't
+       have its 25-word seed written down, you will lose access to that GLAC
+       permanently. The browser does not store seeds.</p>
+
+    <p class="dim" style="margin-top:8px">Current saved address (won't be recoverable from this browser after you continue):</p>
+    <p class="mono addr-block" id="wallet-change-current-addr"></p>
+
+    <label class="seed-confirm">
+      <input type="checkbox" id="wallet-change-cb">
+      <span>I have my 25-word seed written down for this address, <strong>or</strong>
+         I accept that any GLAC at this address will be lost.</span>
+    </label>
+
+    <button class="btn" id="wallet-change-go-btn" disabled>CONTINUE — REPLACE ADDRESS</button>
+    <button class="btn ghost" id="wallet-change-cancel-btn">CANCEL</button>
+  </section>
+
   <!-- GENERATED-WALLET DISPLAY (seed shown ONCE, then dropped from DOM) -->
   <section id="wallet-show" class="panel" hidden>
     <h2 id="wallet-show-title">YOUR NEW WALLET</h2>

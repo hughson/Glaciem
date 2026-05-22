@@ -39,6 +39,11 @@
     walletSaved:    $('wallet-saved'),
     walletSavedAddr:$('wallet-saved-addr'),
     walletChangeBtn:$('wallet-change-btn'),
+    walletChangeConfirm:    $('wallet-change-confirm'),
+    walletChangeCurrentAddr:$('wallet-change-current-addr'),
+    walletChangeCb:         $('wallet-change-cb'),
+    walletChangeGoBtn:      $('wallet-change-go-btn'),
+    walletChangeCancelBtn:  $('wallet-change-cancel-btn'),
     genWalletBtn:   $('gen-wallet-btn'),
     restoreWalletBtn:$('restore-wallet-btn'),
     walletShow:     $('wallet-show'),
@@ -244,11 +249,13 @@
     if (els.walletPanel) els.walletPanel.hidden = false;
     if (els.walletShow)  els.walletShow.hidden = true;
     if (els.walletRestore) els.walletRestore.hidden = true;
+    if (els.walletChangeConfirm) els.walletChangeConfirm.hidden = true;
   }
   function showGame() {
     els.start.hidden = true;
     els.game.hidden = false;
     if (els.walletPanel) els.walletPanel.hidden = true;
+    if (els.walletChangeConfirm) els.walletChangeConfirm.hidden = true;
   }
   function showWin(data) {
     els.game.hidden = true;
@@ -522,9 +529,36 @@
   });
 
   els.walletChangeBtn.addEventListener('click', () => {
-    if (!confirm('Replacing the saved address. Make sure you have your current seed first.')) return;
+    // Hard confirmation panel -- the lazy native confirm() was getting
+    // dismissed too easily and users were burning addresses they didn't
+    // have seeds for. Now: show the current address, force a checkbox
+    // acknowledging the seed/loss tradeoff, then enable the button.
+    const cur = localStorage.getItem('wordmine.address') || '(none)';
+    els.walletChangeCurrentAddr.textContent = cur;
+    els.walletChangeCb.checked = false;
+    els.walletChangeGoBtn.disabled = true;
+    els.walletPanel.hidden = true;
+    els.start.hidden = true;
+    els.walletChangeConfirm.hidden = false;
+  });
+
+  els.walletChangeCb.addEventListener('change', () => {
+    els.walletChangeGoBtn.disabled = !els.walletChangeCb.checked;
+  });
+
+  els.walletChangeGoBtn.addEventListener('click', () => {
+    if (!els.walletChangeCb.checked) return;
     localStorage.removeItem('wordmine.address');
     els.claimAddress.value = '';
+    els.walletChangeConfirm.hidden = true;
+    els.start.hidden = false;
+    renderSavedWallet();
+    toast('Address cleared');
+  });
+
+  els.walletChangeCancelBtn.addEventListener('click', () => {
+    els.walletChangeConfirm.hidden = true;
+    els.start.hidden = false;
     renderSavedWallet();
   });
 
