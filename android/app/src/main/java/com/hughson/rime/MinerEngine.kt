@@ -231,7 +231,10 @@ class MinerEngine(private val rpc: RpcClient) {
                 walletOk = false
             }
             publish()
-            try { Thread.sleep(4000) } catch (e: InterruptedException) { return }
+            // v1.1.4: 4s -> 20s wallet refresh. Block time is ~120s so
+            // this still keeps the UI live-feeling while cutting
+            // /getblocks.bin traffic to the public RPC proxy ~5x.
+            try { Thread.sleep(20_000) } catch (e: InterruptedException) { return }
         }
     }
 

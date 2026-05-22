@@ -44,7 +44,9 @@ class RpcClient(context: Context) {
             val latency = (System.currentTimeMillis() - t0).toInt()
             if (r != null) {
                 peerCache.markSuccess(peer.host, peer.port, latency)
-                tryDiscoverPeers(peer)
+                // v1.1.4: tryDiscoverPeers() removed -- the public proxy
+                // now 403s /get_peer_list, so this call was wasted.
+                // Peers come from seeded endpoints only.
                 return r
             }
             peerCache.markFailure(peer.host, peer.port)

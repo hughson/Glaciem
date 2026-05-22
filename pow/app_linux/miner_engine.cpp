@@ -161,7 +161,9 @@ QJsonObject jsonRpcAny(const QString &method, const QJsonValue &params) {
         int latency_ms = (int)(QDateTime::currentMSecsSinceEpoch() - t0);
         if (!r.isEmpty()) {
             peer_cache_mark_success(g_peers, snap[i].host, snap[i].port, latency_ms);
-            tryDiscoverPeers(snap[i]);
+            // v1.1.4: tryDiscoverPeers() removed -- the public proxy
+            // now 403s /get_peer_list, so this call was wasted. Peers
+            // come from seeded endpoints only.
             return r;
         }
         peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
@@ -516,8 +518,10 @@ void WalletPollThread::run() {
             QMutexLocker lk(&m_e->m_lock);
             m_e->m_walletConnected = false;
         }
-        // ~4s between refreshes
-        for (int i = 0; i < 40 && !m_stop; i++) msleep(100);
+        // v1.1.4: ~20s between refreshes (was 4s). Block time is ~120s
+        // so a 20s refresh keeps the UI live-feeling while cutting
+        // /getblocks.bin traffic to the public RPC proxy ~5x.
+        for (int i = 0; i < 200 && !m_stop; i++) msleep(100);
     }
 }
 

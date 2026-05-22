@@ -200,7 +200,10 @@ static int http_post(int port, const char *body, char *resp, int resp_sz) {
     if (http_post_ep(&snap[i], L"/json_rpc", body, resp, resp_sz)) {
       peer_cache_mark_success(g_peers, snap[i].host, snap[i].port,
                                (int)(GetTickCount() - t0));
-      try_discover_peers(&snap[i]);
+      /* v1.1.4: try_discover_peers() removed -- the public proxy now
+         403s /get_peer_list (admin/debug endpoint that shouldn't be
+         exposed), so this call always failed silently and was wasted
+         bandwidth. Peers come from seeded endpoints only now. */
       return 1;
     }
     peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
@@ -677,8 +680,11 @@ static unsigned __stdcall wallet_thread(void *arg) {
       g_sh.wallet_connected = 0;
       LeaveCriticalSection(&g_sh.cs);
     }
-    /* ~4s between refreshes, but wake fast for a pending Send/generate */
-    for (int i=0;i<40 && !g_send_pending && !g_sweep_pending && !g_history_pending && !g_seed_pending;i++) Sleep(100);
+    /* v1.1.4: ~20s between refreshes (was 4s). Block time is ~120s so
+       the wallet still feels live in the UI, but /getblocks.bin traffic
+       to the public RPC proxy drops ~5x. Send/sweep/history paths still
+       wake the loop immediately via the pending flags. */
+    for (int i=0;i<200 && !g_send_pending && !g_sweep_pending && !g_history_pending && !g_seed_pending;i++) Sleep(100);
   }
   return 0;
 }
