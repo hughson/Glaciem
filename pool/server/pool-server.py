@@ -658,6 +658,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                 "pool_wallet":          POOL_WALLET,
                 "pool_fee_percent":     POOL_FEE_PERCENT,
                 "share_diff_divisor":   SHARE_DIFF_DIVISOR,
+                "min_payout_atomic":    MIN_PAYOUT_ATOMIC,
                 "hashrate":             int(round(hashrate)),
                 "active_miners":        active,
                 "shares_today":         pool_stats["shares_today"],

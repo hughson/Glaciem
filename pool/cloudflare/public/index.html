@@ -136,8 +136,8 @@ footer{border-top:1px solid var(--line);padding:22px 0;text-align:center;color:v
 <span class="k">Payout address:     </span> <span class="v">your wallet (auto-filled from your embedded wallet)</span></pre>
       <p class="dim small" style="margin-top:14px;">
         Or use any other Glaciem-compatible pool by entering its URL there.
-        <br>Auto-payout threshold: <span class="mono" style="color:var(--amber)">0.1 GLAC</span>.
-        Pool fee: <span class="mono" style="color:var(--amber)" id="connect-fee">0%</span>.
+        <br>Auto-payout threshold: <span class="mono" style="color:var(--amber)" id="connect-min-payout">—</span>.
+        Pool fee: <span class="mono" style="color:var(--amber)" id="connect-fee">—</span>.
       </p>
     </div>
   </section>
@@ -165,11 +165,11 @@ footer{border-top:1px solid var(--line);padding:22px 0;text-align:center;color:v
   </section>
 
   <section>
-    <h2>SECURITY NOTE — v1</h2>
-    <div class="warning">
-      <strong>Trust-mode share validation.</strong> v1 of this pool counts shares as miners submit them without re-verifying the Lattice proof-of-work server-side. Fine for the small early network; a dishonest miner could falsely claim shares. Server-side verification ships with v2.
-      <br><br>
-      <strong>Hot wallet.</strong> Block rewards land in a wallet hosted on the same VM as the pool. Industry standard, but if the VM is compromised the attacker gets whatever balance is sitting there. Operator sweeps accumulated balance to a cold address regularly.
+    <h2>SECURITY — v1.1</h2>
+    <div class="warning" id="security-card">
+      <div id="sec-verify">Loading server status…</div>
+      <div id="sec-sweep" style="margin-top:8px;"></div>
+      <div id="sec-bans"  style="margin-top:8px;"></div>
     </div>
   </section>
 
@@ -213,6 +213,21 @@ async function fetchStats() {
     $("s-height").textContent = d.current_job ? d.current_job.height.toLocaleString() : "—";
     $("s-share-diff").textContent = d.current_job ? `share diff ${d.current_job.share_difficulty.toLocaleString()}` : "share diff —";
     $("connect-fee").textContent = (d.pool_fee_percent ?? 0) + "%";
+    // v1.1 hardening: min payout + share verification mode now come from
+    // the server, so the page never lies about the live config.
+    $("connect-min-payout").textContent = d.min_payout_atomic != null
+      ? ((d.min_payout_atomic / 1e12).toLocaleString("en-US", {maximumFractionDigits: 4}) + " GLAC")
+      : "—";
+
+    // ---- security card ----
+    const verify = d.share_verification || "trust";
+    $("sec-verify").innerHTML = verify === "lattice"
+      ? "<strong>Share verification: ON.</strong> Every submitted share is re-hashed server-side using the Lattice PoW and rejected if it doesn't actually meet the share-difficulty target. Honest miners are unaffected; cheaters can't claim fake shares."
+      : "<strong>Share verification: OFF (TRUST MODE).</strong> Shares are credited as miners submit them without server-side re-hashing. A hostile miner could falsely claim shares. Operator should re-enable PoW verification before broader rollout.";
+    $("sec-sweep").innerHTML = d.cold_sweep_enabled
+      ? "<strong>Cold sweep: ON.</strong> The pool's hot wallet auto-transfers accumulated balance to an offline cold wallet on a timer. If this VM is compromised, an attacker only gets ~one sweep window's worth of rewards."
+      : "<strong>Cold sweep: OFF.</strong> Block rewards accumulate on the pool VM indefinitely. Operator should configure a COLD_ADDRESS before significant balance builds up.";
+    $("sec-bans").innerHTML = `<span class="dim">Banned wallets today: <span class="mono accent">${d.banned_wallets_today ?? 0}</span> (auto-banned after 10 invalid shares).</span>`;
   } catch (e) {
     console.warn("stats fetch failed:", e);
   }
