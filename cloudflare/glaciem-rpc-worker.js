@@ -38,11 +38,8 @@ const ORIGINS = [
   { id: "node1", url: "http://static.34.142.105.178.clients.your-server.de" },  // 178.105.142.34
 ];
 
-// Methods we'll cache, with their TTL in seconds. Anything not listed here
-// is passed through to origin every time. Short TTLs because the chain
-// advances every 120s and reorgs (rare but possible at this size) need to
-// resolve quickly. By-hash lookups are content-addressed so safe to cache
-// for an hour.
+// JSON-RPC methods we'll cache (parsed body, keyed by method+params).
+// Anything not listed here passes through to origin every time.
 const CACHE_TTL = {
   // Chain-tip queries -- change only when a new block lands.
   "get_info":                    8,
@@ -62,6 +59,42 @@ const CACHE_TTL = {
   "getblockheaderbyhash":        3600,
   "get_block":                   3600,
 };
+
+// Binary endpoints we'll cache by raw request-body hash. These are wallet
+// sync calls -- /getblocks.bin and friends -- that return MB-sized batches
+// of blocks. They're the actual bandwidth eater on this chain (~46% of
+// traffic, most of the bytes). Wallets at similar sync points will share
+// cached responses. Short TTL is fine because the chain advances every
+// 120s and most rapid retries are within seconds of each other.
+const BIN_CACHE_TTL = {
+  // Wallets typically poll getblocks.bin every ~8s; a 15s TTL means each
+  // wallet's second poll within a window hits cache (and multiple wallets
+  // at tip share the same response). Still well within block time (120s).
+  "/getblocks.bin":          15,
+  "/get_blocks.bin":         15,        // newer name on some forks
+  "/getblocks_by_height.bin": 15,
+  "/get_o_indexes.bin":      60,        // output index lookups -- mostly stable
+  "/get_outs.bin":           60,
+  "/get_transactions":       60,        // tx lookups; tx contents are immutable
+  "/gettransactions":        60,
+};
+
+// Endpoints to refuse outright -- admin/debug endpoints that have no
+// business being exposed via a public proxy.
+const BLOCKED_PATHS = new Set([
+  "/get_peer_list",
+  "/get_public_nodes",
+  "/get_connections",
+  "/get_outputs.bin",   // huge ringsize lookups -- abuse vector
+  "/save_bc",
+  "/stop_save_graph",
+  "/start_save_graph",
+  "/update",
+  "/set_log_level",
+  "/set_log_categories",
+  "/set_bootstrap_daemon",
+  "/set_limit",
+]);
 
 // Per-node hit counter -- writes nodehit:<id>:<YYYY-MM-DD> in KV. Best-effort:
 // read-modify-write isn't atomic so a few counts may be lost under load, but
@@ -211,6 +244,51 @@ export default {
       body = await request.arrayBuffer();
     }
 
+    // Refuse admin/debug endpoints. They never need to be reachable from a
+    // public proxy; exposing them is a needless attack/abuse surface.
+    if (BLOCKED_PATHS.has(url.pathname)) {
+      return new Response(
+        JSON.stringify({ error: { code: -32600, message: "endpoint not exposed" } }),
+        { status: 403, headers: { "content-type": "application/json", ...CORS } }
+      );
+    }
+
+    // ---- binary-endpoint cache (e.g. /getblocks.bin, the wallet-sync
+    // bandwidth eater). Key the cache by raw request-body bytes so two
+    // wallets at the same sync point share the same cached response. ----
+    let binCacheReq = null;
+    let binTtl = 0;
+    if (BIN_CACHE_TTL[url.pathname] && body) {
+      binTtl = BIN_CACHE_TTL[url.pathname];
+      // Hash the raw body bytes -- these endpoints take binary, not JSON,
+      // and we can't introspect parameters portably. Body-hash is a stable
+      // key as long as two wallets send the same bytes.
+      const digest = await crypto.subtle.digest("SHA-256", body);
+      const hex = Array.from(new Uint8Array(digest).slice(0, 20))
+        .map(b => b.toString(16).padStart(2, "0")).join("");
+      binCacheReq = new Request(
+        `https://rpc-cache.local/bin${url.pathname}/${hex}`,
+        { method: "GET" }
+      );
+      const hit = await caches.default.match(binCacheReq);
+      if (hit) {
+        const bytes = await hit.arrayBuffer();
+        if (env && ctx) {
+          ctx.waitUntil(bumpHit(env, "cache"));
+          ctx.waitUntil(bumpMiner(env, request));
+        }
+        return new Response(bytes, {
+          status: 200,
+          headers: {
+            "content-type":
+              hit.headers.get("content-type") || "application/octet-stream",
+            "x-rpc-cache": "HIT",
+            ...CORS,
+          },
+        });
+      }
+    }
+
     // ---- cache lookup (cacheable JSON-RPC methods only) ----
     // Monero's JSON-RPC endpoint is /json_rpc. The "fast" endpoints like
     // /get_height, /get_info are also cacheable but their bodies are empty,
@@ -290,11 +368,37 @@ export default {
           ctx.waitUntil(bumpMiner(env, request));
         }
 
-        // If this was a cacheable call AND the response is healthy, store
-        // a copy in the edge cache with the appropriate TTL.
-        const respText = await resp.text();
-        const isCacheable = resp.status < 400 && (cacheReq || pathCacheReq);
-        if (isCacheable) {
+        // Binary cacheable responses use arrayBuffer (we can't parse them).
+        // JSON cacheable responses go through .text() so we can id-swap
+        // on hits. Pass-through traffic streams the body verbatim.
+        const isBinCacheable = resp.status < 400 && binCacheReq;
+        const isJsonCacheable = resp.status < 400 && (cacheReq || pathCacheReq);
+        const respContentType =
+          resp.headers.get("content-type") ||
+          (isBinCacheable ? "application/octet-stream" : "application/json");
+
+        if (isBinCacheable) {
+          const bytes = await resp.arrayBuffer();
+          const cacheResp = new Response(bytes, {
+            status: 200,
+            headers: {
+              "content-type": respContentType,
+              "cache-control": `public, max-age=${binTtl}`,
+            },
+          });
+          ctx.waitUntil(caches.default.put(binCacheReq, cacheResp));
+          return new Response(bytes, {
+            status: resp.status,
+            headers: {
+              "content-type": respContentType,
+              "x-rpc-cache": "MISS",
+              ...CORS,
+            },
+          });
+        }
+
+        if (isJsonCacheable) {
+          const respText = await resp.text();
           const storeReq = cacheReq || pathCacheReq;
           const storeTtl = ttl || pathTtl;
           const cacheResp = new Response(respText, {
@@ -305,14 +409,22 @@ export default {
             },
           });
           ctx.waitUntil(caches.default.put(storeReq, cacheResp));
+          return new Response(respText, {
+            status: resp.status,
+            headers: {
+              "content-type": "application/json",
+              "x-rpc-cache": "MISS",
+              ...CORS,
+            },
+          });
         }
 
-        return new Response(respText, {
+        // Uncacheable -- stream the response body straight through.
+        return new Response(resp.body, {
           status: resp.status,
           headers: {
-            "content-type":
-              resp.headers.get("content-type") || "application/json",
-            "x-rpc-cache": cacheReq || pathCacheReq ? "MISS" : "BYPASS",
+            "content-type": respContentType,
+            "x-rpc-cache": "BYPASS",
             ...CORS,
           },
         });
