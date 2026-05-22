@@ -185,7 +185,11 @@ static NSDictionary *json_rpc(NSString *method, id params) {
     int latency_ms = (int)((now_s() - t0) * 1000);
     if (r) {
       peer_cache_mark_success(g_peers, snap[i].host, snap[i].port, latency_ms);
-      try_discover_peers(url);
+      /* v1.1.3: try_discover_peers() removed. The public proxy now 403s
+         /get_peer_list (admin/debug endpoint that shouldn't be exposed),
+         so this call always failed silently and was wasted bandwidth.
+         Peers come from seeded endpoints only; revisit if peer churn
+         becomes a real problem. */
       return r;
     }
     peer_cache_mark_failure(g_peers, snap[i].host, snap[i].port);
@@ -277,7 +281,11 @@ static void *wallet_poll(void *arg) {
       g_stats.wallet_connected = 0;
       pthread_mutex_unlock(&g_lock);
     }
-    usleep(4000000);   /* poll every ~4s */
+    /* v1.1.3: bumped 4s -> 20s. Block time is ~120s so a 20s refresh
+       still gives a live-feeling UI while cutting /getblocks.bin traffic
+       to the public proxy ~5x. Send/sweep paths can still drive an
+       immediate refresh through the same thread if needed. */
+    usleep(20000000);  /* poll every ~20s */
   }
   return NULL;
 }
@@ -387,7 +395,13 @@ static void *worker(void *arg) {
     __block int found=0; __block uint32_t win=0; __block int bbest=best;
     char lhbuf[65]={0}; char *lh=lhbuf;
     double tm=now_s();
-    while(g_running && !found && now_s()-tm < 1.5) {
+    /* v1.1.3: template lifetime bumped 1.5s -> 10s. Block time is ~120s
+       so a 10s template-reuse window risks ~8% wasted compute on stale
+       templates (vs ~1.25% at 1.5s), in exchange for ~6.7x fewer
+       get_block_template RPC calls to the public proxy. Good trade
+       while the chain is small; revisit once hashrate scales up and a
+       new-block push notification path lands. */
+    while(g_running && !found && now_s()-tm < 10.0) {
       double tb=now_s();
       /* the whole batch is always hashed -- no early-out on a found block --
          so the hashrate reflects real compute. On a low-difficulty testnet a
