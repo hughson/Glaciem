@@ -14,6 +14,39 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.7] – 2026-05-22
+
+Windows joins the pool-mode lineup (Mac + Android shipped in 1.1.6).
+Linux still pending — v1.1.8.
+
+### Added
+- Windows miner: SOLO / POOL toggle in a new Pool dialog. Pool URL
+  field defaults to `https://glaciem-pool.frostmine.workers.dev` but
+  is editable for any compatible pool.
+- Persisted to `rime_pool.txt` next to the .exe (empty file = pool off,
+  single URL line = pool on).
+- New `pool_get_job()` / `pool_submit_share()` HTTP helpers + a
+  `parse_pool_url()` that splits `g_pool_url` into host / port / ssl
+  for WinHTTP. Reuses the existing `http_post_ep` for the actual
+  TLS + POST work.
+- "POOL" / "POOL ON" header button (left of HOST) so the current
+  mode is visible at a glance.
+
+### Changed
+- Mining loop branches on pool mode:
+  - Pool mode: fetch via `/pool/job`, hash against `share_difficulty`,
+    on found-share re-hash against `network_difficulty` to flag
+    `full_block: true`, submit via `/pool/submit`.
+  - Solo mode: unchanged (`get_block_template` / `submit_block` direct
+    to daemon).
+
+### Notes
+- Same Lattice PoW + dataset code as the rest of the family; no new
+  crypto. Settings take effect at the next batch (~1 second) — no
+  Windows app restart required when toggling pool mode.
+- Linux pool support deferred to v1.1.8 (needs the same edits in
+  `pow/app_linux/miner_engine.cpp` + a Qt dialog).
+
 ## [1.1.6] – 2026-05-22
 
 Adds a **POOL** mining mode to the Mac and Android apps alongside
@@ -211,7 +244,8 @@ over-aggressive polling intervals and removing a wasted admin-endpoint call.
 - Lattice is an original proof-of-work and has not had external
   cryptographic review. Mine at your own risk.
 
-[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.6...HEAD
+[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.7...HEAD
+[1.1.7]: https://github.com/hughson/Glaciem/releases/tag/v1.1.7
 [1.1.6]: https://github.com/hughson/Glaciem/releases/tag/v1.1.6
 [1.1.5]: https://github.com/hughson/Glaciem/releases/tag/v1.1.5
 [1.1.4]: https://github.com/hughson/Glaciem/releases/tag/v1.1.4

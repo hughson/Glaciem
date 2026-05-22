@@ -70,6 +70,78 @@ static void load_host(LPSTR cmd) {
   if (tmp[0]) snprintf(g_host,sizeof g_host,"%s",tmp);
 }
 
+/* ---- v1.1.7 pool mode -----------------------------------------------
+ *
+ * When pool mode is enabled, the mining loop fetches jobs from
+ *   POST {pool_url}/pool/job   { "wallet": <payout addr> }
+ * and submits shares to
+ *   POST {pool_url}/pool/submit { "job_id", "wallet", "nonce", "full_block" }
+ * instead of talking to a daemon directly.
+ *
+ * Settings are persisted to rime_pool.txt (one URL per line; empty file =
+ * pool mode off). A Pool button in the header opens the config dialog.
+ */
+static int  g_pool_enabled    = 0;
+static char g_pool_url[256]   = "https://glaciem-pool.frostmine.workers.dev";
+/* Parsed once from g_pool_url. */
+static char g_pool_host[128]  = "glaciem-pool.frostmine.workers.dev";
+static int  g_pool_port       = 443;
+static int  g_pool_use_ssl    = 1;
+static char g_pool_path_prefix[64] = "";  /* if URL has a subpath, e.g. "/pool" */
+
+/* Parse `g_pool_url` (or any url) -> g_pool_host/port/use_ssl/path_prefix.
+ * Lenient -- doesn't reject malformed URLs hard, just falls back to defaults. */
+static void parse_pool_url(void) {
+  const char *u = g_pool_url;
+  int use_ssl = 1; int port = 443;
+  if (strncmp(u, "https://", 8) == 0) { use_ssl = 1; port = 443; u += 8; }
+  else if (strncmp(u, "http://", 7) == 0) { use_ssl = 0; port = 80; u += 7; }
+  /* host[:port][/path] -- copy host until ':' or '/' or end */
+  char host[128] = {0}; int i = 0;
+  while (*u && *u != ':' && *u != '/' && i < (int)sizeof(host)-1) host[i++] = *u++;
+  host[i] = 0;
+  if (*u == ':') {
+    u++;
+    char pbuf[8] = {0}; int j = 0;
+    while (*u >= '0' && *u <= '9' && j < 7) pbuf[j++] = *u++;
+    pbuf[j] = 0;
+    if (pbuf[0]) port = atoi(pbuf);
+  }
+  /* path prefix (e.g. "/pool" if the user pasted .../pool by accident);
+   * we'll suffix /pool/job ourselves, so strip a trailing /pool if present. */
+  char path[64] = {0}; int k = 0;
+  while (*u && k < (int)sizeof(path)-1) path[k++] = *u++;
+  path[k] = 0;
+  /* trim trailing slash */
+  while (k > 0 && path[k-1] == '/') { path[--k] = 0; }
+  /* if user pasted ".../pool", strip it -- we'll append /pool/job ourselves */
+  if (k >= 5 && strcmp(path + k - 5, "/pool") == 0) { path[k - 5] = 0; }
+  if (host[0]) snprintf(g_pool_host, sizeof g_pool_host, "%s", host);
+  g_pool_port    = port;
+  g_pool_use_ssl = use_ssl;
+  snprintf(g_pool_path_prefix, sizeof g_pool_path_prefix, "%s", path);
+}
+
+static void load_pool_config(void) {
+  FILE *f = fopen("rime_pool.txt","r");
+  if (!f) { g_pool_enabled = 0; parse_pool_url(); return; }
+  char line[256] = {0};
+  if (fgets(line, sizeof line, f)) {
+    /* trim trailing CR/LF/whitespace */
+    int n = (int)strlen(line);
+    while (n > 0 && (line[n-1]=='\n' || line[n-1]=='\r' || line[n-1]==' ' || line[n-1]=='\t'))
+      line[--n] = 0;
+    if (n > 0) {
+      g_pool_enabled = 1;
+      snprintf(g_pool_url, sizeof g_pool_url, "%s", line);
+    } else {
+      g_pool_enabled = 0;
+    }
+  }
+  fclose(f);
+  parse_pool_url();
+}
+
 /* ---- peer cache: seeds + discovered peers, persisted to rime_peers.json
    next to the .exe. Same cache feeds the miner-RPC path and the wallet
    failover. Seeds are always present and tried first; discovered peers
@@ -219,6 +291,55 @@ static int rpc_call(int port, const char *method, const char *params,
     "{\"jsonrpc\":\"2.0\",\"id\":\"0\",\"method\":\"%s\",\"params\":%s}",
     method, params ? params : "{}");
   return http_post(port, body, resp, resp_sz);
+}
+
+/* ---- v1.1.7 pool HTTP helpers --------------------------------------------
+ *
+ * Pool endpoints take a flat JSON body (not JSON-RPC envelope). We
+ * synthesize a one-shot PeerEntry from the parsed g_pool_host/port/ssl
+ * and reuse http_post_ep for the actual TLS + POST work. */
+
+static int http_post_pool(const char *path_suffix, const char *body,
+                          char *resp, int resp_sz) {
+  PeerEntry ep;
+  memset(&ep, 0, sizeof ep);
+  snprintf(ep.host, sizeof ep.host, "%s", g_pool_host);
+  ep.port    = g_pool_port;
+  ep.use_ssl = g_pool_use_ssl;
+
+  /* Build the full path: prefix (if any) + suffix ("/pool/job" etc) */
+  char path_a[160];
+  snprintf(path_a, sizeof path_a, "%s%s", g_pool_path_prefix, path_suffix);
+  /* WinHTTP wants wide-string paths. */
+  wchar_t wpath[160];
+  int wn = MultiByteToWideChar(CP_UTF8, 0, path_a, -1, wpath,
+                                sizeof(wpath)/sizeof(wpath[0]));
+  if (wn <= 0) return 0;
+
+  return http_post_ep(&ep, wpath, body, resp, resp_sz);
+}
+
+/* POST /pool/job -> response body in `resp`. 1 on success.
+ * Caller parses share_difficulty, network_difficulty, job_id, etc. */
+static int pool_get_job(const char *wallet, char *resp, int resp_sz) {
+  char body[512];
+  snprintf(body, sizeof body, "{\"wallet\":\"%s\"}", wallet ? wallet : "");
+  return http_post_pool("/pool/job", body, resp, resp_sz);
+}
+
+/* POST /pool/submit. full_block=1 tells the pool the nonce also meets
+ * network difficulty and it should forward as submitblock. */
+static int pool_submit_share(const char *job_id, const char *wallet,
+                             uint32_t nonce, int full_block,
+                             char *resp, int resp_sz) {
+  char body[512];
+  snprintf(body, sizeof body,
+    "{\"job_id\":\"%s\",\"wallet\":\"%s\",\"nonce\":%u,\"full_block\":%s}",
+    job_id ? job_id : "",
+    wallet ? wallet : "",
+    (unsigned)nonce,
+    full_block ? "true" : "false");
+  return http_post_pool("/pool/submit", body, resp, resp_sz);
 }
 
 /* tiny JSON field readers -- the Monero RPC replies we parse are flat. */
@@ -451,23 +572,49 @@ static unsigned __stdcall mine_thread(void *arg) {
       continue;
     }
 
-    char params[256];
-    snprintf(params,sizeof params,
-      "{\"wallet_address\":\"%s\",\"reserve_size\":8}", waddr);
-    char hbHex[1024], tbHex[8192], seedHex[80];
-    if (!rpc_call(NODE_PORT,"get_block_template",params,resp,sizeof resp) ||
-        !json_get_str(resp,"blockhashing_blob",hbHex,sizeof hbHex) ||
-        !json_get_str(resp,"blocktemplate_blob",tbHex,sizeof tbHex)) {
+    /* v1.1.7: branch on pool mode. Pool jobs use share_difficulty (much
+     * easier than network) and we track network_difficulty separately so
+     * we can flag full_block=true when a share also solves the block. */
+    int pool_mode_now = g_pool_enabled;
+    char hbHex[1024], tbHex[8192], seedHex[80], job_id[64];
+    job_id[0] = 0;
+    int got_template = 0;
+    if (pool_mode_now) {
+      char body[256];
+      snprintf(body, sizeof body, "{\"wallet\":\"%s\"}", waddr);
+      if (http_post_pool("/pool/job", body, resp, sizeof resp) &&
+          json_get_str(resp, "blockhashing_blob", hbHex, sizeof hbHex) &&
+          json_get_str(resp, "blocktemplate_blob", tbHex, sizeof tbHex)) {
+        json_get_str(resp, "job_id", job_id, sizeof job_id);
+        got_template = 1;
+      }
+    } else {
+      char params[256];
+      snprintf(params,sizeof params,
+        "{\"wallet_address\":\"%s\",\"reserve_size\":8}", waddr);
+      if (rpc_call(NODE_PORT,"get_block_template",params,resp,sizeof resp) &&
+          json_get_str(resp,"blockhashing_blob",hbHex,sizeof hbHex) &&
+          json_get_str(resp,"blocktemplate_blob",tbHex,sizeof tbHex)) {
+        got_template = 1;
+      }
+    }
+    if (!got_template) {
       EnterCriticalSection(&g_sh.cs);
       g_sh.daemon_connected=0; g_sh.hashrate=0;
       LeaveCriticalSection(&g_sh.cs);
-      sh_status("No daemon");
+      sh_status(pool_mode_now ? "No pool" : "No daemon");
       for (int i=0;i<12 && g_sh.running;i++) Sleep(100);
       continue;
     }
-    uint64_t height=0, diff=0;
+    uint64_t height=0, diff=0, net_diff=0;
     json_get_u64(resp,"height",&height);
-    json_get_u64(resp,"difficulty",&diff);
+    if (pool_mode_now) {
+      json_get_u64(resp,"share_difficulty",&diff);
+      json_get_u64(resp,"network_difficulty",&net_diff);
+    } else {
+      json_get_u64(resp,"difficulty",&diff);
+      net_diff = diff;
+    }
     if (!json_get_str(resp,"seed_hash",seedHex,sizeof seedHex)) seedHex[0]=0;
 
     u8 hb[256], tb[4096];
@@ -528,21 +675,40 @@ static unsigned __stdcall mine_thread(void *arg) {
 
     /* submit the winning nonce */
     if (have_winner && noff+4<=tb_len) {
-      tb[noff+0]=(u8)winner_nonce;       tb[noff+1]=(u8)(winner_nonce>>8);
-      tb[noff+2]=(u8)(winner_nonce>>16); tb[noff+3]=(u8)(winner_nonce>>24);
-      char *blockHex = malloc((size_t)tb_len*2+1);
-      char *sp = malloc((size_t)tb_len*2+8);
-      if (blockHex && sp) {
-        bin2hex(tb,tb_len,blockHex);
-        snprintf(sp,(size_t)tb_len*2+8,"[\"%s\"]",blockHex);
+      if (pool_mode_now) {
+        /* v1.1.7: re-hash with the winning nonce against network_diff to
+         * decide whether to flag full_block=true (so the pool forwards
+         * to the daemon as submitblock). */
+        u8 hb_check[256]; memcpy(hb_check, hb, hb_len);
+        hb_check[noff+0]=(u8)winner_nonce;
+        hb_check[noff+1]=(u8)(winner_nonce>>8);
+        hb_check[noff+2]=(u8)(winner_nonce>>16);
+        hb_check[noff+3]=(u8)(winner_nonce>>24);
+        u8 mh[32];
+        lattice_hash_ds(hb_check, hb_len, g_dataset, mh);
+        int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
         char sr[2048];
-        if (rpc_call(NODE_PORT,"submit_block",sp,sr,sizeof sr)) {
-          char stt[16];
-          if (json_get_str(sr,"status",stt,sizeof stt) && strcmp(stt,"OK")==0)
-            blocks++;
+        if (pool_submit_share(job_id, waddr, winner_nonce, is_full, sr, sizeof sr)) {
+          int got_block = strstr(sr, "\"block\":true") != NULL;
+          if (got_block) blocks++;
         }
+      } else {
+        tb[noff+0]=(u8)winner_nonce;       tb[noff+1]=(u8)(winner_nonce>>8);
+        tb[noff+2]=(u8)(winner_nonce>>16); tb[noff+3]=(u8)(winner_nonce>>24);
+        char *blockHex = malloc((size_t)tb_len*2+1);
+        char *sp = malloc((size_t)tb_len*2+8);
+        if (blockHex && sp) {
+          bin2hex(tb,tb_len,blockHex);
+          snprintf(sp,(size_t)tb_len*2+8,"[\"%s\"]",blockHex);
+          char sr[2048];
+          if (rpc_call(NODE_PORT,"submit_block",sp,sr,sizeof sr)) {
+            char stt[16];
+            if (json_get_str(sr,"status",stt,sizeof stt) && strcmp(stt,"OK")==0)
+              blocks++;
+          }
+        }
+        free(blockHex); free(sp);
       }
-      free(blockHex); free(sp);
       EnterCriticalSection(&g_sh.cs);
       g_sh.blocks_found = blocks;
       LeaveCriticalSection(&g_sh.cs);
@@ -719,6 +885,7 @@ static const RECT R_RECV = {  40, 472, 153, 502 };      /* inside the wallet car
 static const RECT R_SEND = { 163, 472, 276, 502 };
 static const RECT R_HIST = { 286, 472, DW-40, 502 };
 static const RECT R_HOST = { DW-128, 18, DW-24, 48 };   /* header, top-right */
+static const RECT R_POOL = { DW-238, 18, DW-138, 48 };  /* left of HOST */
 
 static void draw_text(HDC dc, const char *s, int x, int y, int w,
                       HFONT f, COLORREF col, UINT align) {
@@ -790,6 +957,10 @@ static void paint(HWND hwnd) {
     draw_text(dc,subtitle,30,54,DW-60,g_fSmall,C_DIM,DT_LEFT);
   }
   draw_button(dc,&R_HOST,C_BTN,"HOST",g_fSmall,C_AMBER);
+  /* v1.1.7: "POOL" toggle. Label flips to indicate current mode. */
+  draw_button(dc,&R_POOL,C_BTN,
+              g_pool_enabled ? "POOL ON" : "POOL",
+              g_fSmall, g_pool_enabled ? C_AMBER : 0x8a8a99);
 
   /* hashrate card */
   RECT card1={24,84,DW-24,258};
@@ -1222,6 +1393,103 @@ static void do_host(HWND parent) {
   if (!g_host_dlg) EnableWindow(parent,TRUE);
 }
 
+/* ---- v1.1.7 Pool settings dialog ----
+ *
+ * One checkbox (enabled) + one URL field. Persists to rime_pool.txt
+ * next to the .exe: empty file = disabled, single URL line = enabled.
+ * Takes effect at next batch (~1s) -- no restart required. */
+#define IDC_POOL_ENABLE 401
+#define IDC_POOL_URL    402
+#define IDC_POOL_OK     403
+#define IDC_POOL_CXL    404
+static HWND g_pool_dlg;
+
+static LRESULT CALLBACK PoolProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
+  switch (m) {
+  case WM_CREATE: {
+    HINSTANCE hi=((LPCREATESTRUCT)lp)->hInstance;
+    CreateWindowExA(0,"STATIC",
+                    "POOL MODE -- when ON, shares get submitted to the pool "
+                    "URL below; payouts arrive once your contribution crosses "
+                    "the pool's threshold. When OFF, this miner submits full "
+                    "blocks directly (you keep 100% of any block you find, "
+                    "but finds are rare with a CPU).",
+                    WS_CHILD|WS_VISIBLE, 16,12,408,64,h,NULL,hi,NULL);
+    CreateWindowExA(0,"BUTTON","Enable pool mode",
+                    WS_CHILD|WS_VISIBLE|BS_AUTOCHECKBOX,
+                    16,80,260,24,h,(HMENU)IDC_POOL_ENABLE,hi,NULL);
+    SendMessageA(GetDlgItem(h,IDC_POOL_ENABLE),BM_SETCHECK,
+                 g_pool_enabled?BST_CHECKED:BST_UNCHECKED,0);
+    CreateWindowExA(0,"STATIC","Pool URL:",
+                    WS_CHILD|WS_VISIBLE, 16,114,80,18,h,NULL,hi,NULL);
+    CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT",g_pool_url,
+                    WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
+                    16,134,408,24,h,(HMENU)IDC_POOL_URL,hi,NULL);
+    CreateWindowExA(0,"STATIC",
+                    "Default: https://glaciem-pool.frostmine.workers.dev "
+                    "-- works with any compatible pool. Saved to "
+                    "rime_pool.txt; takes effect at the next mining iteration.",
+                    WS_CHILD|WS_VISIBLE, 16,162,408,40,h,NULL,hi,NULL);
+    CreateWindowExA(0,"BUTTON","Save",WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,
+                    232,210,92,30,h,(HMENU)IDC_POOL_OK,hi,NULL);
+    CreateWindowExA(0,"BUTTON","Cancel",WS_CHILD|WS_VISIBLE,
+                    332,210,92,30,h,(HMENU)IDC_POOL_CXL,hi,NULL);
+    return 0;
+  }
+  case WM_COMMAND:
+    if (LOWORD(wp)==IDC_POOL_OK) {
+      LRESULT chk = SendMessageA(GetDlgItem(h,IDC_POOL_ENABLE),BM_GETCHECK,0,0);
+      char url[256] = {0};
+      GetWindowTextA(GetDlgItem(h,IDC_POOL_URL),url,sizeof url);
+      /* trim */
+      int n = (int)strlen(url);
+      while (n>0 && (url[n-1]==' '||url[n-1]=='\t'||url[n-1]=='\r'||url[n-1]=='\n'))
+        url[--n]=0;
+      int new_enabled = (chk==BST_CHECKED) ? 1 : 0;
+      if (new_enabled && !url[0]) {
+        MessageBoxA(h,"Pool mode is enabled but the URL is empty. Either "
+                      "untick the box or paste a pool URL.",
+                    "Glaciem Miner - Pool",MB_OK|MB_ICONWARNING);
+        return 0;
+      }
+      FILE *f = fopen("rime_pool.txt","w");
+      if (!f) {
+        MessageBoxA(h,"Could not write rime_pool.txt -- is the folder writable?",
+                    "Glaciem Miner - Pool",MB_OK|MB_ICONWARNING);
+        return 0;
+      }
+      if (new_enabled) fprintf(f,"%s\n",url);
+      fclose(f);
+      g_pool_enabled = new_enabled;
+      if (url[0]) snprintf(g_pool_url,sizeof g_pool_url,"%s",url);
+      parse_pool_url();
+      InvalidateRect(g_hwnd,NULL,FALSE);   /* repaint header button label */
+      DestroyWindow(h);
+    } else if (LOWORD(wp)==IDC_POOL_CXL) {
+      DestroyWindow(h);
+    }
+    return 0;
+  case WM_CLOSE: DestroyWindow(h); return 0;
+  case WM_DESTROY:
+    g_pool_dlg=NULL;
+    EnableWindow(g_hwnd,TRUE);
+    SetActiveWindow(g_hwnd);
+    return 0;
+  }
+  return DefWindowProcA(h,m,wp,lp);
+}
+
+static void do_pool(HWND parent) {
+  if (g_pool_dlg) { SetForegroundWindow(g_pool_dlg); return; }
+  HINSTANCE hi=(HINSTANCE)GetWindowLongPtrA(parent,GWLP_HINSTANCE);
+  RECT pr; GetWindowRect(parent,&pr);
+  EnableWindow(parent,FALSE);
+  g_pool_dlg=CreateWindowExA(WS_EX_DLGMODALFRAME,"RimePoolWnd","Pool Mode",
+      WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,
+      pr.left+40,pr.top+70,460,310,parent,NULL,hi,NULL);
+  if (!g_pool_dlg) EnableWindow(parent,TRUE);
+}
+
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
   switch (msg) {
   case WM_CREATE: {
@@ -1272,6 +1540,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     else if (PtInRect(&R_SEND,p)) do_send(hwnd);
     else if (PtInRect(&R_HIST,p)) do_history(hwnd);
     else if (PtInRect(&R_HOST,p)) do_host(hwnd);
+    else if (PtInRect(&R_POOL,p)) do_pool(hwnd);
     return 0;
   }
 
@@ -1292,6 +1561,7 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
   (void)hPrev;
   SetProcessDPIAware();          /* crisp on high-DPI tablet displays */
   load_host(cmd);
+  load_pool_config();   /* v1.1.7: read rime_pool.txt for pool mode + URL */
   InitializeCriticalSection(&g_sh.cs);
 
   WNDCLASSA wc={0};
@@ -1329,6 +1599,15 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
   rc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);
   rc.lpszClassName="RimeRestoreWnd";
   RegisterClassA(&rc);
+
+  /* v1.1.7: the Pool-config dialog's window class */
+  WNDCLASSA pc={0};
+  pc.lpfnWndProc=PoolProc;
+  pc.hInstance=hInst;
+  pc.hCursor=LoadCursor(NULL,IDC_ARROW);
+  pc.hbrBackground=(HBRUSH)(COLOR_BTNFACE+1);
+  pc.lpszClassName="RimePoolWnd";
+  RegisterClassA(&pc);
 
   /* open large: the client area fills ~90% of the screen work area
      (aspect-preserved), so the UI is comfortably sized on tablets and
