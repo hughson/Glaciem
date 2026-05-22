@@ -42,30 +42,31 @@ async function bumpHit(env, nodeId) {
 
 // Privacy-preserving unique-miner counter.
 //
-// Goal: count unique miners per day. Anti-goal: ever be able to identify an
-// individual miner from KV contents.
+// Goal: a single aggregate number -- "N unique miners today".
+// Anti-goal: ever store or expose anything that could identify a miner,
+// including coarse aggregates like country distribution. For a privacy
+// coin, "1 miner from country X" can still uniquely identify someone,
+// especially in combination with what a person might self-disclose
+// elsewhere. So: no country, no region, no per-miner detail of any kind.
 //
 // Strategy: hash (daily_salt || IP) -> 16 hex chars, write that as a key.
-// The salt rotates daily so yesterday's fingerprints can't be matched to
-// today's. Raw IPs never touch KV. Wallet addresses are NEVER read or stored
-// (they ride through in the RPC body untouched). The country header from
-// Cloudflare is bucketed by ISO code only -- never per-IP.
+// The salt rotates daily so yesterday's fingerprints can't be correlated
+// to today's. Raw IPs never touch KV. The cf-ipcountry header is read
+// only to discard (we deliberately don't propagate it). Wallet addresses
+// in the RPC body are never read or stored either -- they ride through
+// the proxy untouched.
 //
-// /stats exposes only aggregate counts. Even WE can't reverse a fingerprint
-// back to an IP -- the salt is regenerated each UTC day and the hash is
-// keyed-SHA256.
+// /stats exposes only aggregate counts. Even we can't reverse a
+// fingerprint back to an IP: salt regenerates daily, hash is SHA-256,
+// no raw input is retained.
 async function bumpMiner(env, request) {
   if (!env || !env.STATS) return;
   const ip = request.headers.get("cf-connecting-ip");
   if (!ip) return;
-  const country = (request.headers.get("cf-ipcountry") || "XX")
-    .toUpperCase().slice(0, 2);
   const day = new Date().toISOString().slice(0, 10);
 
-  // Daily-rotating salt. Same across all isolates today; impossible to
-  // correlate to yesterday's fingerprints without yesterday's salt
-  // (which we don't keep -- KV TTL aside, it's deterministic but only
-  // useful within the same UTC day window).
+  // Daily-rotating salt. Same across isolates today; correlation to
+  // yesterday's fingerprints is impossible because the salt has changed.
   const enc = new TextEncoder();
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -75,14 +76,9 @@ async function bumpMiner(env, request) {
     .map(b => b.toString(16).padStart(2, "0")).join("");
 
   try {
-    // Write the fingerprint key. Idempotent within the day (same IP same
-    // fingerprint), so K writes for K total requests but only N distinct
-    // keys for N distinct IPs. To count uniques, list keys with this prefix.
+    // Idempotent within the day (same IP -> same fp). Listing this prefix
+    // gives the unique-IP count for the day. No other dimensions stored.
     await env.STATS.put(`miner:${day}:${fp}`, "1",
-      { expirationTtl: 7 * 86400 });
-    // Country bucket -- per-day per-country fingerprint, again no raw IP.
-    // Aggregating is "how many distinct fp:country pairs exist today."
-    await env.STATS.put(`mc:${day}:${country}:${fp}`, "1",
       { expirationTtl: 7 * 86400 });
   } catch (_e) {
     // never block the RPC for stats
@@ -103,29 +99,19 @@ export default {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    // Aggregate stats only -- no per-IP, no per-fingerprint exposed.
+    // Aggregate stats only -- no per-IP, no per-fingerprint, no country,
+    // no region. The unique-miner total is a single number per day.
     const url = new URL(request.url);
     if (url.pathname === "/stats" && request.method === "GET") {
       const day = new Date().toISOString().slice(0, 10);
-      const out = { day, nodes: {}, miners: { unique: 0, countries: {} } };
+      const out = { day, nodes: {}, miners: { unique: 0 } };
       for (const o of ORIGINS) {
         out.nodes[o.id] = parseInt(
           (await env.STATS.get(`nodehit:${o.id}:${day}`)) || "0", 10) || 0;
       }
-      // Count unique miner fingerprints today (list-with-prefix is the
-      // closest KV gets to a set-size operation; cheap at our scale).
       const minerList = await env.STATS.list(
         { prefix: `miner:${day}:`, limit: 1000 });
       out.miners.unique = minerList.keys.length;
-      // Country distribution -- count fingerprints per country code.
-      // We do NOT expose individual fingerprints in the response.
-      const cList = await env.STATS.list(
-        { prefix: `mc:${day}:`, limit: 1000 });
-      for (const k of cList.keys) {
-        const parts = k.name.split(":");        // mc:YYYY-MM-DD:CC:fp
-        const cc = parts[2] || "XX";
-        out.miners.countries[cc] = (out.miners.countries[cc] || 0) + 1;
-      }
       return new Response(JSON.stringify(out, null, 2), {
         headers: { "content-type": "application/json", ...CORS },
       });
