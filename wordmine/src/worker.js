@@ -103,12 +103,23 @@ async function getFaucetBalance(env) {
   // The VPS payout daemon writes faucet:balance to KV every ~30s. The
   // Worker only reads -- it never calls wallet-rpc directly, which keeps
   // the wallet RPC private on localhost on the VPS.
+  //
+  // Returns { balance, unlocked }:
+  //   balance  = TOTAL faucet wallet balance (for display). Doesn't
+  //              flash to 0 after a payout while change is locked.
+  //   unlocked = currently SPENDABLE balance. Used to cap max_reward
+  //              so we never promise a payout we can't actually transfer
+  //              this instant.
   const rec = await env.WORDMINE.get('faucet:balance', { type: 'json' });
-  if (!rec) return 0;
+  if (!rec) return { balance: 0, unlocked: 0 };
   // If we haven't heard from the daemon in 10 min, treat as 0 (don't pay
   // out against a stale balance).
-  if (Date.now() - rec.at > 600000) return 0;
-  return rec.balance;
+  if (Date.now() - rec.at > 600000) return { balance: 0, unlocked: 0 };
+  // Backward-compat: pre-update daemon pushed only `balance` (which was
+  // really the unlocked balance). Fall back to that if `unlocked` missing.
+  const balance  = rec.balance ?? 0;
+  const unlocked = rec.unlocked !== undefined ? rec.unlocked : balance;
+  return { balance, unlocked };
 }
 
 // ---- routes ----------------------------------------------------------------
@@ -194,8 +205,12 @@ async function handleGuess(req, env) {
 
   let reward = 0;
   if (won) {
-    const bal = await getFaucetBalance(env);
-    reward = maxReward(bal) / rec.guess_count;
+    // Reward sizing is gated by UNLOCKED balance, not total: even if the
+    // wallet shows 1100 GLAC total, if it's all locked behind a 10-block
+    // confirmation wait, we'd promise a payout that the daemon can't yet
+    // transfer. Use unlocked to be honest with the player.
+    const { unlocked } = await getFaucetBalance(env);
+    reward = maxReward(unlocked) / rec.guess_count;
     rec.reward = reward;
   }
   // TTL by state:
@@ -268,11 +283,12 @@ async function handleClaimStatus(req, env) {
 }
 
 async function handleFaucet(req, env) {
-  const balance = await getFaucetBalance(env);
+  const { balance, unlocked } = await getFaucetBalance(env);
   return json({
-    balance,
+    balance,                          // total -- for headline display
+    unlocked,                         // currently spendable (for tooltip)
     address: env.FAUCET_ADDRESS || '',
-    max_reward: maxReward(balance),
+    max_reward: maxReward(unlocked),  // honest about what we can pay now
   });
 }
 
