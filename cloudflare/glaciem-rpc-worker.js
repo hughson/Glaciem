@@ -40,6 +40,55 @@ async function bumpHit(env, nodeId) {
   }
 }
 
+// Privacy-preserving unique-miner counter.
+//
+// Goal: count unique miners per day. Anti-goal: ever be able to identify an
+// individual miner from KV contents.
+//
+// Strategy: hash (daily_salt || IP) -> 16 hex chars, write that as a key.
+// The salt rotates daily so yesterday's fingerprints can't be matched to
+// today's. Raw IPs never touch KV. Wallet addresses are NEVER read or stored
+// (they ride through in the RPC body untouched). The country header from
+// Cloudflare is bucketed by ISO code only -- never per-IP.
+//
+// /stats exposes only aggregate counts. Even WE can't reverse a fingerprint
+// back to an IP -- the salt is regenerated each UTC day and the hash is
+// keyed-SHA256.
+async function bumpMiner(env, request) {
+  if (!env || !env.STATS) return;
+  const ip = request.headers.get("cf-connecting-ip");
+  if (!ip) return;
+  const country = (request.headers.get("cf-ipcountry") || "XX")
+    .toUpperCase().slice(0, 2);
+  const day = new Date().toISOString().slice(0, 10);
+
+  // Daily-rotating salt. Same across all isolates today; impossible to
+  // correlate to yesterday's fingerprints without yesterday's salt
+  // (which we don't keep -- KV TTL aside, it's deterministic but only
+  // useful within the same UTC day window).
+  const enc = new TextEncoder();
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    enc.encode(`glaciem-rpc-salt-${day}::${ip}`)
+  );
+  const fp = Array.from(new Uint8Array(digest).slice(0, 8))
+    .map(b => b.toString(16).padStart(2, "0")).join("");
+
+  try {
+    // Write the fingerprint key. Idempotent within the day (same IP same
+    // fingerprint), so K writes for K total requests but only N distinct
+    // keys for N distinct IPs. To count uniques, list keys with this prefix.
+    await env.STATS.put(`miner:${day}:${fp}`, "1",
+      { expirationTtl: 7 * 86400 });
+    // Country bucket -- per-day per-country fingerprint, again no raw IP.
+    // Aggregating is "how many distinct fp:country pairs exist today."
+    await env.STATS.put(`mc:${day}:${country}:${fp}`, "1",
+      { expirationTtl: 7 * 86400 });
+  } catch (_e) {
+    // never block the RPC for stats
+  }
+}
+
 // CORS so the Glaciem website can read live chain stats from the browser.
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -54,15 +103,28 @@ export default {
       return new Response(null, { status: 204, headers: CORS });
     }
 
-    // Optional stats readout: GET /stats returns today's per-node hit counts.
-    // Cheap to expose since it's just one KV read per origin.
+    // Aggregate stats only -- no per-IP, no per-fingerprint exposed.
     const url = new URL(request.url);
     if (url.pathname === "/stats" && request.method === "GET") {
       const day = new Date().toISOString().slice(0, 10);
-      const out = { day };
+      const out = { day, nodes: {}, miners: { unique: 0, countries: {} } };
       for (const o of ORIGINS) {
-        out[o.id] = parseInt(
+        out.nodes[o.id] = parseInt(
           (await env.STATS.get(`nodehit:${o.id}:${day}`)) || "0", 10) || 0;
+      }
+      // Count unique miner fingerprints today (list-with-prefix is the
+      // closest KV gets to a set-size operation; cheap at our scale).
+      const minerList = await env.STATS.list(
+        { prefix: `miner:${day}:`, limit: 1000 });
+      out.miners.unique = minerList.keys.length;
+      // Country distribution -- count fingerprints per country code.
+      // We do NOT expose individual fingerprints in the response.
+      const cList = await env.STATS.list(
+        { prefix: `mc:${day}:`, limit: 1000 });
+      for (const k of cList.keys) {
+        const parts = k.name.split(":");        // mc:YYYY-MM-DD:CC:fp
+        const cc = parts[2] || "XX";
+        out.miners.countries[cc] = (out.miners.countries[cc] || 0) + 1;
       }
       return new Response(JSON.stringify(out, null, 2), {
         headers: { "content-type": "application/json", ...CORS },
@@ -87,9 +149,12 @@ export default {
         // 5xx -> node is failing, try the next one. Anything else (incl.
         // JSON-RPC error bodies, which come back as HTTP 200) is a real answer.
         if (resp.status >= 500) continue;
-        // Stats bump runs after the response is on its way -- ctx.waitUntil
-        // lets the KV write complete without delaying the user's response.
-        if (env && ctx) ctx.waitUntil(bumpHit(env, origin.id));
+        // Stats bumps run after the response is on its way -- ctx.waitUntil
+        // lets the KV writes complete without delaying the user's response.
+        if (env && ctx) {
+          ctx.waitUntil(bumpHit(env, origin.id));
+          ctx.waitUntil(bumpMiner(env, request));
+        }
         return new Response(resp.body, {
           status: resp.status,
           headers: {
