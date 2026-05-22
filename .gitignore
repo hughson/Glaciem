@@ -126,3 +126,8 @@ __pycache__/
 *.log
 /dist
 /build-win
+
+# Cloudflare Worker tooling: per-project cache + tmp + uploaded-assets
+# manifest. Auto-regenerated on `wrangler deploy`; nothing in here
+# should live in source control.
+.wrangler/
