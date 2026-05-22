@@ -1,0 +1,382 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>GlacWordmine — earn GLAC by guessing words | Glaciem</title>
+<meta name="description" content="A word-guessing faucet for Glaciem (GLAC). Solve the five-letter word; the fewer guesses, the more GLAC you earn.">
+<meta name="theme-color" content="#0c0c11">
+<meta property="og:title" content="GlacWordmine — earn GLAC by guessing words">
+<meta property="og:description" content="A word-guessing faucet for Glaciem (GLAC). Fewer guesses = more GLAC.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%230c0c11'/%3E%3Ctext x='16' y='22' text-anchor='middle' font-family='monospace' font-weight='900' font-size='18' fill='%233fc1e0'%3EG%3C/text%3E%3C/svg%3E">
+<style>
+  :root{
+    --bg:#0c0c11; --bg2:#131319; --card:#1a1a22; --line:#2e2e3a;
+    --amber:#3FC1E0; --amber-soft:#6dd4ee; --text:#f5f5fa; --dim:#b8b8c4;
+    --green:#46c86e; --yellow:#d4a13b; --gray:#7a7a8a; --red:#e65050;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    --sans:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+  }
+  body{font-size:15px}
+  *{box-sizing:border-box;margin:0;padding:0;-webkit-tap-highlight-color:transparent}
+  body{
+    background:var(--bg); color:var(--text);
+    font-family:var(--sans); line-height:1.5;
+    min-height:100vh; display:flex; flex-direction:column;
+    -webkit-font-smoothing:antialiased;
+  }
+  a{color:inherit;text-decoration:none}
+
+  /* header */
+  header{
+    border-bottom:1px solid var(--line); padding:14px 20px;
+    display:flex; align-items:center; justify-content:space-between;
+    background:var(--bg);
+  }
+  .brand{display:flex; align-items:baseline; gap:10px}
+  .brand h1{
+    font-family:var(--mono); font-weight:800; letter-spacing:.06em;
+    font-size:20px; color:var(--amber);
+  }
+  .brand .tag{font-family:var(--mono); font-size:11px; color:var(--dim); letter-spacing:.14em}
+  .topright{display:flex; align-items:center; gap:14px; font-family:var(--mono); font-size:13px}
+  .topright .label{color:var(--dim); letter-spacing:.1em}
+  .topright .val{color:var(--amber); font-weight:700}
+
+  /* main */
+  main{
+    flex:1; display:flex; flex-direction:column; align-items:center;
+    padding:18px 16px 30px; gap:18px;
+  }
+
+  /* game (wraps board + keyboard; center them within the wrapper) */
+  #game{display:flex; flex-direction:column; align-items:center; gap:18px}
+
+  /* board */
+  .board{
+    display:grid; grid-template-rows:repeat(6, 1fr);
+    gap:6px; width:min(340px, 92vw);
+  }
+  .row{display:grid; grid-template-columns:repeat(5,1fr); gap:6px}
+  .cell{
+    aspect-ratio:1/1; display:flex; align-items:center; justify-content:center;
+    background:var(--bg); border:2px solid var(--line);
+    font-family:var(--mono); font-weight:800; text-transform:uppercase;
+    font-size:clamp(20px, 6vw, 28px); color:var(--text);
+    transition:transform .12s ease, background .25s ease, border-color .25s ease, color .25s ease;
+  }
+  .cell.typing{border-color:var(--dim); transform:scale(1.04)}
+  .cell.green{background:var(--green); border-color:var(--green); color:var(--bg)}
+  .cell.yellow{background:var(--yellow); border-color:var(--yellow); color:var(--bg)}
+  .cell.gray{background:var(--gray); border-color:var(--gray); color:var(--text)}
+  .cell.flip{animation:flip .35s ease forwards}
+  @keyframes flip{
+    0%{transform:rotateX(0)}
+    50%{transform:rotateX(90deg)}
+    100%{transform:rotateX(0)}
+  }
+  .cell.shake{animation:shake .45s ease}
+  @keyframes shake{
+    10%,90%{transform:translateX(-2px)}
+    20%,80%{transform:translateX(4px)}
+    30%,50%,70%{transform:translateX(-6px)}
+    40%,60%{transform:translateX(6px)}
+  }
+
+  /* keyboard */
+  .kb{display:grid; gap:6px; width:min(540px, 100vw); padding:0 8px}
+  .kbrow{display:flex; gap:5px; justify-content:center}
+  .key{
+    flex:1; min-width:24px; max-width:48px; height:54px;
+    display:flex; align-items:center; justify-content:center;
+    background:var(--card); border:1px solid var(--line); border-radius:6px;
+    font-family:var(--mono); font-weight:700; font-size:15px;
+    color:var(--text); cursor:pointer; user-select:none;
+    transition:background .15s ease, color .15s ease, border-color .15s ease;
+  }
+  .key:active{transform:scale(.96)}
+  .key.wide{flex:1.6; max-width:74px; font-size:11px; letter-spacing:.08em}
+  .key.green{background:var(--green); border-color:var(--green); color:var(--bg)}
+  .key.yellow{background:var(--yellow); border-color:var(--yellow); color:var(--bg)}
+  .key.gray{background:var(--gray); border-color:var(--gray); color:var(--bg)}
+
+  /* status / notice */
+  .toast{
+    position:fixed; top:78px; left:50%; transform:translateX(-50%);
+    background:var(--card); border:1px solid var(--amber); border-radius:8px;
+    padding:10px 18px; font-family:var(--mono); font-size:13px; color:var(--text);
+    box-shadow:0 8px 24px rgba(0,0,0,.4); opacity:0; pointer-events:none;
+    transition:opacity .25s ease; z-index:10;
+  }
+  .toast.show{opacity:1}
+
+  /* result panel */
+  .panel{
+    width:min(420px,92vw); background:var(--card); border:1px solid var(--line);
+    border-radius:12px; padding:22px; display:flex; flex-direction:column; gap:12px;
+  }
+  .panel h2{
+    font-family:var(--mono); letter-spacing:.06em; font-size:18px;
+    color:var(--amber);
+  }
+  .panel p{font-size:15px; color:var(--text); line-height:1.55}
+  .panel .dim{color:var(--dim); font-size:14px; line-height:1.55}
+  .panel .reward{
+    font-family:var(--mono); font-size:28px; font-weight:800; color:var(--green);
+    text-align:center; padding:14px 0;
+  }
+  .panel .reward.fail{color:var(--red)}
+  .panel .mono{font-family:var(--mono); font-size:13px; color:var(--text); word-break:break-all}
+  .panel input{
+    width:100%; background:var(--bg); border:1px solid var(--line);
+    color:var(--text); font-family:var(--mono); font-size:14px;
+    padding:11px 12px; border-radius:6px;
+  }
+  .panel input::placeholder{color:var(--dim); opacity:1}
+  .panel input:focus{outline:none; border-color:var(--amber)}
+  .panel .btn{
+    background:var(--amber); color:var(--bg); border:none; border-radius:8px;
+    padding:12px 16px; font-family:var(--mono); font-weight:800; font-size:13px;
+    letter-spacing:.08em; cursor:pointer; transition:background .15s ease;
+  }
+  .panel .btn:hover{background:var(--amber-soft)}
+  .panel .btn.ghost{background:transparent; color:var(--text); border:1px solid var(--line)}
+  .panel .btn.ghost:hover{color:var(--amber); border-color:var(--amber)}
+  .panel .btn:disabled{opacity:.5; cursor:not-allowed}
+
+  /* footer */
+  footer{
+    text-align:center; font-family:var(--mono); font-size:13px;
+    color:var(--dim); padding:20px 16px; border-top:1px solid var(--line);
+  }
+  footer a:hover{color:var(--amber)}
+  footer .row{display:flex; flex-wrap:wrap; justify-content:center; gap:14px; margin-top:6px}
+
+  /* turnstile / captcha */
+  .captcha-wrap{display:flex; justify-content:center}
+
+  /* wallet UI ----------------------------------------------------------------*/
+  .wallet-actions{display:flex; gap:10px; flex-wrap:wrap}
+  .wallet-actions .btn{flex:1; min-width:140px}
+  .panel .warn{
+    background:rgba(212,161,59,.08); border-left:3px solid var(--yellow);
+    padding:10px 12px; border-radius:4px; color:var(--text); font-size:14px;
+  }
+  .panel .addr-block{
+    background:var(--bg); padding:10px 12px; border-radius:6px;
+    border:1px solid var(--line); font-size:12px; line-height:1.45;
+  }
+  /* The seed-display panel needs more room than the default 420px so the
+     25 words can sit in a 5x5 grid without wrapping inside each word. */
+  #wallet-show{width:min(640px, 96vw)}
+
+  .seed-grid{
+    display:grid; grid-template-columns:repeat(5, 1fr); gap:10px 14px;
+    background:var(--bg); padding:14px 14px; border-radius:8px;
+    border:1px solid var(--line);
+  }
+  @media (max-width:560px){ .seed-grid{grid-template-columns:repeat(3,1fr)} }
+  .seed-grid .word{
+    display:flex; gap:6px; align-items:baseline;
+    font-family:var(--mono); font-size:13px;
+    /* keep each word on one line; if the panel is too narrow the @media
+       query above drops to 3 columns instead of breaking mid-word. */
+    white-space:nowrap;
+  }
+  /* Number prefix as a CSS ::before so it isn't selectable -- a
+     select-all-and-copy on the seed grid yields just the 25 words,
+     space-separated, ready to paste into a restore prompt. */
+  .seed-grid .word::before{
+    content: attr(data-n) ".";
+    color: var(--dim);
+    font-size: 11px;
+    width: 22px;
+    text-align: right;
+    flex-shrink: 0;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  .seed-grid .word .w{color:var(--amber-soft)}
+
+  .seed-confirm{
+    display:flex; gap:10px; align-items:flex-start;
+    font-size:13px; color:var(--text); margin:6px 0;
+    cursor:pointer; user-select:none; line-height:1.45;
+  }
+  /* Override the generic .panel input rule (which targets the text
+     field used for claim addresses) so the checkbox doesn't inherit
+     width:100% / padding / border / font from it. */
+  .seed-confirm input[type="checkbox"]{
+    width:16px; height:16px; padding:0; margin:2px 0 0;
+    flex-shrink:0; accent-color:var(--amber); cursor:pointer;
+    background:transparent; border:none;
+  }
+
+  .panel textarea{
+    width:100%; background:var(--bg); border:1px solid var(--line);
+    color:var(--text); font-family:var(--mono); font-size:13px;
+    padding:11px 12px; border-radius:6px; resize:vertical;
+  }
+  .panel textarea:focus{outline:none; border-color:var(--amber)}
+  .panel .err-line{
+    color:var(--red); font-size:13px; min-height:1.4em; margin:0;
+  }
+
+  /* visibility helpers */
+  [hidden]{display:none !important}
+</style>
+</head>
+
+<body>
+
+<header>
+  <div class="brand">
+    <h1>GLACWORDMINE</h1>
+    <span class="tag">GLACIEM FAUCET</span>
+  </div>
+  <div class="topright">
+    <span class="label">FAUCET</span>
+    <span class="val" id="faucet-balance">— GLAC</span>
+  </div>
+</header>
+
+<main>
+
+  <!-- WALLET PANEL (Generate / Restore / saved-address summary) -->
+  <section id="wallet" class="panel" hidden>
+    <h2>YOUR GLACIEM WALLET</h2>
+    <div id="wallet-empty">
+      <p class="dim">You need a Glaciem address to receive payouts. If you don't have one
+         yet, generate one right here — it never leaves this browser.</p>
+      <div class="wallet-actions">
+        <button class="btn" id="gen-wallet-btn">GENERATE NEW WALLET</button>
+        <button class="btn ghost" id="restore-wallet-btn">RESTORE FROM SEED</button>
+      </div>
+    </div>
+    <div id="wallet-saved" hidden>
+      <p class="dim">Saved address (remembered next visit):</p>
+      <p class="mono" id="wallet-saved-addr"></p>
+      <button class="btn ghost" id="wallet-change-btn">CHANGE ADDRESS</button>
+    </div>
+  </section>
+
+  <!-- GENERATED-WALLET DISPLAY (seed shown ONCE, then dropped from DOM) -->
+  <section id="wallet-show" class="panel" hidden>
+    <h2 id="wallet-show-title">YOUR NEW WALLET</h2>
+    <p class="dim warn">Write these 25 words down on paper. Anyone with this seed can
+       spend your GLAC, and we don't store it anywhere — lose it and the address is
+       gone forever. For larger balances, use the desktop wallet.</p>
+
+    <p class="dim" style="margin-top:8px">Address</p>
+    <p class="mono addr-block" id="wallet-show-addr"></p>
+
+    <p class="dim" style="margin-top:8px; display:flex; justify-content:space-between; align-items:baseline">
+      <span>25-word recovery seed</span>
+      <button type="button" class="btn ghost" id="seed-copy-btn"
+              style="padding:4px 10px; font-size:11px">COPY ALL 25 WORDS</button>
+    </p>
+    <div class="seed-grid" id="wallet-show-seed"></div>
+
+    <label class="seed-confirm">
+      <input type="checkbox" id="seed-confirm-cb">
+      <span>I've written down the 25 words. I understand they're the only way to
+         recover this wallet.</span>
+    </label>
+
+    <button class="btn" id="seed-continue" disabled>SAVE ADDRESS AND CONTINUE</button>
+  </section>
+
+  <!-- RESTORE-FROM-SEED PANEL -->
+  <section id="wallet-restore" class="panel" hidden>
+    <h2>RESTORE FROM SEED</h2>
+    <p class="dim">Paste your 25-word Glaciem (or Monero-fork) recovery seed.
+       Separate words with spaces or newlines.</p>
+    <textarea id="restore-input" rows="3"
+              placeholder="abbey abducts ability ..."
+              autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
+    <p id="restore-err" class="err-line"></p>
+    <button class="btn" id="restore-go-btn">RESTORE</button>
+    <button class="btn ghost" id="restore-cancel-btn">CANCEL</button>
+  </section>
+
+  <!-- START SCREEN -->
+  <section id="start" class="panel">
+    <h2>EARN GLAC BY GUESSING WORDS</h2>
+    <p>Guess the five-letter word. Each guess turns
+       <span style="color:var(--green); font-weight:700">green</span>,
+       <span style="color:var(--yellow); font-weight:700">yellow</span>, or
+       <span style="color:var(--gray); font-weight:700">gray</span> based on which letters are
+       right and in the right place.</p>
+    <p class="dim">Reward scales by how many guesses you take. A one-guess solve pays
+       <span id="max-reward">— GLAC</span> right now. Six-guess solves pay
+       <span id="min-reward">— GLAC</span>. The faucet refills via donations.</p>
+    <p class="dim">One puzzle per IP per hour. Be patient with the captcha — Cloudflare
+       runs it for us so bots can't drain the faucet.</p>
+    <div class="captcha-wrap" id="captcha-wrap"></div>
+    <button class="btn" id="play-btn" disabled>WAITING FOR CAPTCHA…</button>
+  </section>
+
+  <!-- GAME -->
+  <section id="game" hidden>
+    <div class="board" id="board"></div>
+    <div class="kb" id="kb"></div>
+  </section>
+
+  <!-- WIN PANEL -->
+  <section id="win" class="panel" hidden>
+    <h2>SOLVED IN <span id="win-guesses">—</span></h2>
+    <div class="reward" id="win-reward">— GLAC</div>
+    <p class="dim">Paste a Glaciem address (starts with <span class="mono">R</span>) to claim.
+       Remembered next visit.</p>
+    <input type="text" id="claim-address" placeholder="R…"
+           autocapitalize="off" autocorrect="off" spellcheck="false">
+    <button class="btn" id="claim-btn">CLAIM</button>
+    <div id="claim-status" class="dim"></div>
+    <button class="btn ghost" data-reload>PLAY AGAIN LATER</button>
+  </section>
+
+  <!-- LOSS PANEL -->
+  <section id="loss" class="panel" hidden>
+    <h2>NOT SOLVED</h2>
+    <div class="reward fail">0 GLAC</div>
+    <p>The word was <span class="mono" id="loss-word" style="color:var(--amber)"></span>.</p>
+    <p class="dim">You used all six guesses. No payout this round. New puzzle available in
+       an hour.</p>
+    <button class="btn ghost" data-reload>CLOSE</button>
+  </section>
+
+  <!-- RATE-LIMITED PANEL -->
+  <section id="cooldown" class="panel" hidden>
+    <h2>COOL DOWN</h2>
+    <p>One puzzle per hour. You played recently from this IP.</p>
+    <p class="dim">Next try available in <span id="cooldown-time">—</span>.</p>
+    <button class="btn ghost" data-reload>REFRESH</button>
+  </section>
+
+  <!-- DONATE PANEL -->
+  <section id="donate-card" class="panel" style="border-color:rgba(63,193,224,.3)">
+    <h2>DONATE TO THE FAUCET</h2>
+    <p class="dim">When the faucet drops below 1000 GLAC, payouts shrink proportionally.
+       Top it up to keep rewards high for everyone else.</p>
+    <p class="mono" style="background:var(--bg); padding:10px; border-radius:6px"
+       id="faucet-address">loading…</p>
+    <button class="btn ghost" id="copy-address">COPY ADDRESS</button>
+  </section>
+
+</main>
+
+<div class="toast" id="toast"></div>
+
+<footer>
+  <div>GlacWordmine — a word-guessing faucet for Glaciem (GLAC). Open source.</div>
+  <div class="row">
+    <a href="https://glaciem.frostmine.workers.dev/">Glaciem website</a> ·
+    <a href="https://github.com/hughson/Glaciem">GitHub</a> ·
+    <a href="https://github.com/hughson/Glaciem/releases">Miner apps</a>
+  </div>
+</footer>
+
+<script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+<script src="game.js"></script>
+</body>
+</html>

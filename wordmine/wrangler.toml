@@ -1,0 +1,38 @@
+# Wordmine Worker -- Wordle-style faucet for Glaciem.
+#
+# Deploy:
+#   cd wordmine && npx wrangler@latest deploy
+#
+# Requires:
+#   - a KV namespace named WORDMINE  (create with: npx wrangler kv namespace create WORDMINE)
+#   - TURNSTILE_SECRET set via:       npx wrangler secret put TURNSTILE_SECRET
+#   - FAUCET_ADDRESS in [vars] below
+#
+# The Worker never talks to the wallet directly. The VPS-side payout daemon
+# (see ../wordmine/payout/) drains the claim queue from KV via the
+# Cloudflare API and writes balance updates back into KV.
+
+name = "glacwordmine"
+main = "src/worker.js"
+compatibility_date = "2026-05-21"
+
+[assets]
+directory = "./public"
+binding   = "ASSETS"
+not_found_handling = "single-page-application"
+# Force every request through the Worker so we can attach security headers
+# (CSP, HSTS, X-Frame-Options, etc.) to static assets too -- otherwise CF
+# would serve files straight from edge cache and the headers would only
+# land on /api/* responses.
+run_worker_first = true
+
+# KV: created out-of-band, fill in the id after `npx wrangler kv namespace create WORDMINE`
+[[kv_namespaces]]
+binding = "WORDMINE"
+id      = "d41e9c0bd1234b8795da0a7424fb932d"
+
+[vars]
+# TURNSTILE_SECRET is now set as a Worker secret via
+#   npx wrangler secret put TURNSTILE_SECRET
+# (Cloudflare Turnstile widget "glacwordmine", site key 0x4AAAAAADUJKvz_iS7-vogJ).
+FAUCET_ADDRESS    = "R62YPEvVQkNLcevNtek2v96kvpM6nxopoYsWoQxewSGnDnX9yeiod9mfTnkgRH6kKe5BR1NQLGYVRMnboeH14hTW1Cgoh6Y2N"

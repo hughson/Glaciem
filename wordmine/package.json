@@ -1,0 +1,17 @@
+{
+  "name": "wordmine",
+  "version": "1.0.0",
+  "description": "Wordle-style faucet for Glaciem -- Cloudflare Worker + KV.",
+  "private": true,
+  "scripts": {
+    "build:wallet": "esbuild public/lib/wallet.js --bundle --format=esm --minify --outfile=public/lib/wallet.bundle.js",
+    "predeploy": "npm run build:wallet",
+    "deploy": "npx wrangler deploy"
+  },
+  "license": "ISC",
+  "devDependencies": {
+    "@noble/curves": "1.6.0",
+    "@noble/hashes": "1.5.0",
+    "esbuild": "^0.28.0"
+  }
+}
