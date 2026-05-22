@@ -110,15 +110,25 @@ class MinerEngine(private val rpc: RpcClient) {
     fun start() {
         if (running) return
         running = true
+        // v1.1.5: publish() immediately so the START button repaints on the
+        // same frame as the tap. Without this, the first publish() from
+        // mineLoop only fires after the initial template fetch / dataset
+        // build (1-5s), and a frustrated re-tap would silently STOP again.
+        publish()
         minerThread = Thread { mineLoop() }.apply { isDaemon = true; start() }
     }
 
     fun stop() {
         running = false
-        minerThread?.join(8000)
-        minerThread = null
+        // v1.1.5: publish() immediately so the UI flips to "START MINING"
+        // on the same frame as the tap. The join below can wait up to 8s
+        // for the current hash batch to finish; without this early
+        // publish the user would see no feedback for a second or two and
+        // think the button didn't register.
         hashrate = 0.0          // idle -> show 0, not the last reading
         publish()
+        minerThread?.join(8000)
+        minerThread = null
     }
 
     fun isRunning() = running

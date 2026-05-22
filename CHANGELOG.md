@@ -14,6 +14,25 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.5] – 2026-05-22
+
+Android-only. Fixes a long-standing UX bug where the START / STOP mining
+button felt unresponsive — taps registered immediately but the UI didn't
+repaint for 1–5 seconds, leading users to retry and accidentally
+re-toggle.
+
+### Fixed
+- Android miner: `MinerEngine.start()` and `MinerEngine.stop()` now call
+  `publish()` immediately so the START button repaints on the same frame
+  as the tap. Previously the first `publish()` from start only fired
+  after the initial template fetch / dataset build (1–5s), and `stop()`
+  only published after waiting up to 8s for the current hash batch to
+  finish.
+
+### Notes
+- Only the Android APK is rebuilt at 1.1.5. Mac, Windows, and Linux are
+  unaffected (different UI paths) and stay at 1.1.4.
+
 ## [1.1.4] – 2026-05-22
 
 Public-RPC bandwidth diet rolled out to Windows, Linux, and Android.
@@ -142,7 +161,8 @@ over-aggressive polling intervals and removing a wasted admin-endpoint call.
 - Lattice is an original proof-of-work and has not had external
   cryptographic review. Mine at your own risk.
 
-[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.4...HEAD
+[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.5...HEAD
+[1.1.5]: https://github.com/hughson/Glaciem/releases/tag/v1.1.5
 [1.1.4]: https://github.com/hughson/Glaciem/releases/tag/v1.1.4
 [1.1.3]: https://github.com/hughson/Glaciem/releases/tag/v1.1.3
 [1.1.2]: https://github.com/hughson/Glaciem/releases/tag/v1.1.2
