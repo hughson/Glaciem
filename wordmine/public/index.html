@@ -155,6 +155,26 @@
   /* turnstile / captcha */
   .captcha-wrap{display:flex; justify-content:center}
 
+  /* download buttons ---------------------------------------------------------*/
+  .dl-grid{
+    display:grid; grid-template-columns:repeat(2, 1fr); gap:8px;
+  }
+  @media (max-width:480px){ .dl-grid{grid-template-columns:1fr} }
+  .dlbtn{
+    display:flex; flex-direction:column; gap:2px;
+    background:var(--bg); border:1px solid var(--line); border-radius:8px;
+    padding:11px 14px; text-decoration:none;
+    transition:border-color .15s ease, color .15s ease;
+  }
+  .dlbtn:hover{border-color:var(--amber)}
+  .dlbtn .dl-plat{
+    font-family:var(--mono); font-weight:800; font-size:13px;
+    letter-spacing:.08em; color:var(--amber);
+  }
+  .dlbtn .dl-sub{
+    font-family:var(--mono); font-size:11px; color:var(--dim);
+  }
+
   /* wallet UI ----------------------------------------------------------------*/
   .wallet-actions{display:flex; gap:10px; flex-wrap:wrap}
   .wallet-actions .btn{flex:1; min-width:140px}
@@ -351,6 +371,39 @@
     <p>One puzzle per hour. You played recently from this IP.</p>
     <p class="dim">Next try available in <span id="cooldown-time">—</span>.</p>
     <button class="btn ghost" data-reload>REFRESH</button>
+  </section>
+
+  <!-- GET A WALLET PANEL -->
+  <section id="get-wallet" class="panel">
+    <h2>GET A WALLET</h2>
+    <p class="dim">Each Glaciem miner app bundles a wallet — generate an address,
+       receive faucet payouts, mine more GLAC. Pick your platform:</p>
+    <div class="dl-grid">
+      <a class="dlbtn"
+         href="https://github.com/hughson/Glaciem/releases/download/v1.1.2/Glaciem-Miner-macOS.zip">
+        <span class="dl-plat">MAC</span>
+        <span class="dl-sub">Apple Silicon · .app</span>
+      </a>
+      <a class="dlbtn"
+         href="https://github.com/hughson/Glaciem/releases/download/v1.1.2/Glaciem-Miner-Windows.exe">
+        <span class="dl-plat">WINDOWS</span>
+        <span class="dl-sub">64-bit · .exe</span>
+      </a>
+      <a class="dlbtn"
+         href="https://github.com/hughson/Glaciem/releases/download/v1.1.2/Glaciem-Miner-Linux.AppImage">
+        <span class="dl-plat">LINUX</span>
+        <span class="dl-sub">x86_64 · .AppImage</span>
+      </a>
+      <a class="dlbtn"
+         href="https://github.com/hughson/Glaciem/releases/download/v1.1.2/Glaciem-Miner-Android.apk">
+        <span class="dl-plat">ANDROID</span>
+        <span class="dl-sub">arm64 · .apk</span>
+      </a>
+    </div>
+    <p class="dim" style="font-size:13px; margin-top:4px">
+       Prefer to just keep the address you generated above? That works too —
+       come back here whenever you want to check the faucet.
+    </p>
   </section>
 
   <!-- DONATE PANEL -->
