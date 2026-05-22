@@ -1,3 +1,9 @@
 name = "glaciem-rpc"
 main = "glaciem-rpc-worker.js"
 compatibility_date = "2026-05-19"
+
+# KV binding for per-node hit counters. Shared namespace with wordmine.
+# Keys we write: nodehit:<node_id>:<YYYY-MM-DD>  (incremented per successful proxy)
+[[kv_namespaces]]
+binding = "STATS"
+id      = "d41e9c0bd1234b8795da0a7424fb932d"
