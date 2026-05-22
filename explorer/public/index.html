@@ -190,7 +190,7 @@ footer .mono{letter-spacing:.1em}
 // ============================================================
 
 const RPC = "https://glaciem-rpc.frostmine.workers.dev";
-const ATOMIC = 1e12;          // 1 RME = 10^12 atomic units
+const ATOMIC = 1e12;          // 1 GLAC = 10^12 atomic units
 const BLOCK_TIME = 120;       // target block time (seconds)
 const PAGE_BLOCKS = 25;       // how many recent blocks to show on home
 
@@ -223,7 +223,7 @@ async function getTransactions(txHashes) {
 // ---- formatting helpers ---------------------------------------------
 
 const fmtNum = n => Number(n).toLocaleString("en-US");
-const fmtRme = a => (a / ATOMIC).toLocaleString("en-US", {maximumFractionDigits: 6}) + " RME";
+const fmtGlac = a => (a / ATOMIC).toLocaleString("en-US", {maximumFractionDigits: 6}) + " GLAC";
 const fmtBytes = b => {
   if (b < 1024) return `${b} B`;
   if (b < 1024*1024) return `${(b/1024).toFixed(1)} KB`;
@@ -356,7 +356,7 @@ async function renderHome() {
                 <td><span class="hash">${shortHash(h.hash)}</span></td>
                 <td class="right">${h.num_txes ?? 0}</td>
                 <td class="right">${fmtBytes(h.block_size || h.block_weight || 0)}</td>
-                <td class="right">${fmtRme(h.reward)}</td>
+                <td class="right">${fmtGlac(h.reward)}</td>
               </tr>
             `).join("")}
           </tbody>
@@ -431,7 +431,7 @@ async function renderBlock(id) {
           </div>
           <div class="detail-row">
             <span class="label">MINER REWARD</span>
-            <span class="value">${fmtRme(header.reward)}</span>
+            <span class="value">${fmtGlac(header.reward)}</span>
           </div>
           <div class="detail-row">
             <span class="label">NONCE</span>
@@ -548,7 +548,7 @@ async function renderTx(hash) {
           ${body && body.rct_signatures && body.rct_signatures.txnFee !== undefined ? `
           <div class="detail-row">
             <span class="label">FEE</span>
-            <span class="value">${fmtRme(body.rct_signatures.txnFee)}</span>
+            <span class="value">${fmtGlac(body.rct_signatures.txnFee)}</span>
           </div>` : ""}
           ${tx.in_pool !== undefined ? `
           <div class="detail-row">
