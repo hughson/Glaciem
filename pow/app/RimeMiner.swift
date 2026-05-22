@@ -96,6 +96,11 @@ struct ContentView: View {
     @State private var balanceStr      = "0.000000"
     @State private var nodeHost = UserDefaults.standard.string(forKey: "nodeHost") ?? "glaciem-rpc.frostmine.workers.dev"
     @State private var nodePort = (UserDefaults.standard.object(forKey: "nodePort") as? Int) ?? 443
+    // v1.1.6: pool mode. Defaults to SOLO (false) so upgrade is a no-op
+    // behaviorally for existing users. Pool URL defaults to the official
+    // pool; the field is editable so users can point at any pool.
+    @State private var poolEnabled = UserDefaults.standard.bool(forKey: "poolEnabled")
+    @State private var poolURL     = UserDefaults.standard.string(forKey: "poolURL") ?? "https://glaciem-pool.frostmine.workers.dev"
     @State private var showSettings = false
 
     private let tick = Timer.publish(every: 0.12, on: .main, in: .common).autoconnect()
@@ -123,18 +128,25 @@ struct ContentView: View {
         }
         .onAppear {
             miner_set_node(nodeHost, Int32(nodePort))
+            miner_set_pool_config(poolEnabled ? 1 : 0, poolURL)
             // re-open the embedded wallet if one was already generated
             if FileManager.default.fileExists(atPath: walletPath() + ".keys") {
                 miner_open_wallet(walletPath(), "")
             }
         }
         .sheet(isPresented: $showSettings) {
-            SettingsSheet(host0: nodeHost, port0: nodePort, walletPath: walletPath(),
-                onSave: { h, p in
+            SettingsSheet(host0: nodeHost, port0: nodePort,
+                          poolEnabled0: poolEnabled, poolURL0: poolURL,
+                          walletPath: walletPath(),
+                onSave: { h, p, pe, pu in
                     nodeHost = h; nodePort = p
+                    poolEnabled = pe; poolURL = pu
                     UserDefaults.standard.set(h, forKey: "nodeHost")
                     UserDefaults.standard.set(p, forKey: "nodePort")
+                    UserDefaults.standard.set(pe, forKey: "poolEnabled")
+                    UserDefaults.standard.set(pu, forKey: "poolURL")
                     miner_set_node(h, Int32(p))
+                    miner_set_pool_config(pe ? 1 : 0, pu)
                     showSettings = false
                 },
                 onCancel: { showSettings = false })
@@ -213,23 +225,31 @@ private struct HeaderView: View {
     }
 }
 
-// MARK: settings sheet (node + wallet)
+// MARK: settings sheet (node + wallet + v1.1.6 pool mode)
 private struct SettingsSheet: View {
     let walletPath: String
-    let onSave: (String, Int) -> Void
+    /// Save callback: (host, port, poolEnabled, poolURL)
+    let onSave: (String, Int, Bool, String) -> Void
     let onCancel: () -> Void
     @State private var host: String
     @State private var port: String
+    @State private var poolEnabled: Bool
+    @State private var poolURL: String
     @State private var generated: GenWallet?
     @State private var showRestore = false
 
-    init(host0: String, port0: Int, walletPath: String,
-         onSave: @escaping (String, Int) -> Void, onCancel: @escaping () -> Void) {
+    init(host0: String, port0: Int,
+         poolEnabled0: Bool, poolURL0: String,
+         walletPath: String,
+         onSave: @escaping (String, Int, Bool, String) -> Void,
+         onCancel: @escaping () -> Void) {
         self.walletPath = walletPath
         self.onSave = onSave
         self.onCancel = onCancel
         _host = State(initialValue: host0)
         _port = State(initialValue: String(port0))
+        _poolEnabled = State(initialValue: poolEnabled0)
+        _poolURL = State(initialValue: poolURL0)
     }
 
     private func generateNewWallet() {
@@ -258,6 +278,28 @@ private struct SettingsSheet: View {
             TextField("node port", text: $port)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 12, design: .monospaced))
+
+            // ---- v1.1.6: pool mode toggle + URL ----
+            Toggle(isOn: $poolEnabled) {
+                Text("MINING MODE — POOL")
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundColor(amber).tracking(1.5)
+            }
+            .toggleStyle(.switch)
+            .padding(.top, 4)
+            Text(poolEnabled
+                 ? "Pool mode: shares submitted to the pool below; payouts arrive once your contribution crosses the pool's threshold."
+                 : "Solo mode: this miner submits full blocks directly to the daemon — you keep 100% of any block you find but block-finds are rare with small hashrate.")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(dimText)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+            TextField("pool URL", text: $poolURL)
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 11, design: .monospaced))
+                .disabled(!poolEnabled)
+                .opacity(poolEnabled ? 1.0 : 0.5)
+
             Text("WALLET — generate a wallet to mine to and hold GLAC. Balance and Send use this built-in wallet.")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(dimText)
@@ -279,7 +321,11 @@ private struct SettingsSheet: View {
             }.buttonStyle(.plain)
             Button(action: {
                 let h = host.trimmingCharacters(in: .whitespacesAndNewlines)
-                onSave(h.isEmpty ? "glaciem-rpc.frostmine.workers.dev" : h, Int(port) ?? 443)
+                let pu = poolURL.trimmingCharacters(in: .whitespacesAndNewlines)
+                onSave(h.isEmpty ? "glaciem-rpc.frostmine.workers.dev" : h,
+                       Int(port) ?? 443,
+                       poolEnabled,
+                       pu.isEmpty ? "https://glaciem-pool.frostmine.workers.dev" : pu)
             }) {
                 Text("SAVE")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))

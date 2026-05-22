@@ -51,6 +51,15 @@ static int             g_node_port        = 443;
 static char            g_wallet_path[1024]= "";   /* embedded wallet file path */
 static RimeWallet   *g_wallet           = NULL; /* embedded wallet handle    */
 
+/* v1.1.6: pool-mode state. When pool_enabled is set, the mining loop
+ * fetches jobs from {pool_url}/pool/job and submits shares to
+ * {pool_url}/pool/submit instead of talking to a daemon directly.
+ * Wallet still mines to the user's payout address (carried in the
+ * /pool/job request body); block rewards land in the POOL's wallet
+ * and are paid out proportionally to share contribution. */
+static volatile int    g_pool_enabled     = 0;
+static char            g_pool_url[256]    = "https://glaciem-pool.frostmine.workers.dev";
+
 static double now_s(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
   return t.tv_sec + t.tv_nsec/1e9;
@@ -99,6 +108,66 @@ static NSDictionary *json_rpc_url(NSString *url, NSString *method, id params) {
   if (!out) return nil;
   id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
   return [resp isKindOfClass:NSDictionary.class] ? resp[@"result"] : nil;
+}
+
+/* v1.1.6 pool-mode HTTP helpers.
+ *
+ * Pool endpoints take a flat JSON body (not JSON-RPC), so we have a
+ * dedicated http_post_json() that POSTs `body` to `url` and returns
+ * the decoded NSDictionary. Used by the mining loop in pool mode. */
+static NSDictionary *http_post_json(NSString *url, NSDictionary *body) {
+  NSData *bd = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+  NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:[NSURL URLWithString:url]];
+  req.HTTPMethod = @"POST";
+  req.HTTPBody = bd;
+  req.timeoutInterval = 8;
+  [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+  __block NSData *out = nil;
+  __block NSHTTPURLResponse *httpResp = nil;
+  dispatch_semaphore_t sem = dispatch_semaphore_create(0);
+  [[[NSURLSession sharedSession] dataTaskWithRequest:req
+      completionHandler:^(NSData *d, NSURLResponse *r, NSError *e){
+        out = d;
+        if ([r isKindOfClass:NSHTTPURLResponse.class]) httpResp = (NSHTTPURLResponse *)r;
+        dispatch_semaphore_signal(sem);
+      }] resume];
+  if (dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 9*NSEC_PER_SEC)))
+    return nil;
+  if (!out || httpResp.statusCode >= 400) return nil;
+  id resp = [NSJSONSerialization JSONObjectWithData:out options:0 error:nil];
+  return [resp isKindOfClass:NSDictionary.class] ? resp : nil;
+}
+
+/* Fetch a job from the pool. Returns a dict shaped like:
+ *   { job_id, blockhashing_blob, blocktemplate_blob, seed_hash,
+ *     height, network_difficulty, share_difficulty, target } */
+static NSDictionary *pool_get_job(NSString *wallet) {
+  char url_c[320]; char host_c[256];
+  pthread_mutex_lock(&g_lock);
+  strncpy(host_c, g_pool_url, sizeof(host_c)-1); host_c[sizeof(host_c)-1] = 0;
+  pthread_mutex_unlock(&g_lock);
+  snprintf(url_c, sizeof(url_c), "%s/pool/job", host_c);
+  NSString *url = [NSString stringWithUTF8String:url_c];
+  return http_post_json(url, @{@"wallet": wallet ?: @""});
+}
+
+/* Submit a share or full block to the pool. `is_full_block = 1` tells
+ * the pool the nonce ALSO meets network difficulty -- the pool then
+ * forwards to the daemon as submitblock. */
+static NSDictionary *pool_submit_share(NSString *jobId, NSString *wallet,
+                                       uint32_t nonce, int is_full_block) {
+  char url_c[320]; char host_c[256];
+  pthread_mutex_lock(&g_lock);
+  strncpy(host_c, g_pool_url, sizeof(host_c)-1); host_c[sizeof(host_c)-1] = 0;
+  pthread_mutex_unlock(&g_lock);
+  snprintf(url_c, sizeof(url_c), "%s/pool/submit", host_c);
+  NSString *url = [NSString stringWithUTF8String:url_c];
+  return http_post_json(url, @{
+    @"job_id":     jobId ?: @"",
+    @"wallet":     wallet ?: @"",
+    @"nonce":      @(nonce),
+    @"full_block": @(is_full_block ? YES : NO),
+  });
 }
 /* ---- peer cache (seeds + discovered) ---------------------------------- */
 /* The Cloudflare Worker stays primary -- it absorbs the connection storm a
@@ -366,10 +435,27 @@ static void *worker(void *arg) {
     }
     pthread_mutex_lock(&g_lock); g_stats.no_address=0; pthread_mutex_unlock(&g_lock);
     NSString *mine_to = [NSString stringWithUTF8String:chosen];
-    NSDictionary *tpl = json_rpc(@"get_block_template",
-        @{@"wallet_address":mine_to, @"reserve_size":@(8)});
+
+    /* v1.1.6: in pool mode, fetch the job from the pool instead of
+     * calling get_block_template on the daemon. The pool injects ITS
+     * wallet as the coinbase recipient and tracks our share contribution
+     * against `mine_to`, paying out proportionally on block-find. */
+    int pool_mode_now = g_pool_enabled;
+    NSDictionary *tpl;
+    NSString *job_id = nil;
+    uint64_t share_diff = 0;     /* only set in pool mode */
+    if (pool_mode_now) {
+      tpl = pool_get_job(mine_to);
+      if (tpl) {
+        job_id     = tpl[@"job_id"];
+        share_diff = [tpl[@"share_difficulty"] unsignedLongLongValue];
+      }
+    } else {
+      tpl = json_rpc(@"get_block_template",
+          @{@"wallet_address":mine_to, @"reserve_size":@(8)});
+    }
     if(!tpl || ![tpl[@"blockhashing_blob"] isKindOfClass:NSString.class]) {
-      worker_set(0,hr,total,0,0,blocks,best,now_s()-t0,NULL);   /* no daemon */
+      worker_set(0,hr,total,0,0,blocks,best,now_s()-t0,NULL);
       for(int i=0;i<10 && g_running;i++) usleep(100000);
       continue;
     }
@@ -377,7 +463,15 @@ static void *worker(void *arg) {
     NSData *tbD=hex2data(tpl[@"blocktemplate_blob"]);
     NSData *seedD=hex2data(tpl[@"seed_hash"]);
     uint64_t height=[tpl[@"height"] unsignedLongLongValue];
-    uint64_t diff=[tpl[@"difficulty"] unsignedLongLongValue];
+    /* In pool mode the daemon's "difficulty" field is replaced by the
+     * pool's share_difficulty; we keep network_difficulty separately to
+     * know when a share ALSO solves the actual block. */
+    uint64_t diff = pool_mode_now
+      ? share_diff
+      : [tpl[@"difficulty"] unsignedLongLongValue];
+    uint64_t net_diff = pool_mode_now
+      ? [tpl[@"network_difficulty"] unsignedLongLongValue]
+      : diff;
     if(!hbD || !tbD || hbD.length<1 || hbD.length>250) { usleep(200000); continue; }
     const u8 *hb=hbD.bytes; int hb_len=(int)hbD.length;
     int noff=nonce_offset(hb,hb_len);
@@ -395,13 +489,15 @@ static void *worker(void *arg) {
     __block int found=0; __block uint32_t win=0; __block int bbest=best;
     char lhbuf[65]={0}; char *lh=lhbuf;
     double tm=now_s();
-    /* v1.1.3: template lifetime bumped 1.5s -> 10s. Block time is ~120s
-       so a 10s template-reuse window risks ~8% wasted compute on stale
-       templates (vs ~1.25% at 1.5s), in exchange for ~6.7x fewer
-       get_block_template RPC calls to the public proxy. Good trade
-       while the chain is small; revisit once hashrate scales up and a
-       new-block push notification path lands. */
-    while(g_running && !found && now_s()-tm < 10.0) {
+    /* v1.1.3: template lifetime 1.5s -> 10s in solo mode (block time
+     *   ~120s, ~8% wasted compute on stale templates is fine).
+     * v1.1.6: in POOL mode, refresh every 2.5s instead. The pool
+     *   already caches its upstream template, so fetching often is
+     *   cheap; and a stale pool job whose share_difficulty changed
+     *   would have its submissions rejected as "stale job" by the pool.
+     *   Stay conservative. */
+    double template_budget = pool_mode_now ? 2.5 : 10.0;
+    while(g_running && !found && now_s()-tm < template_budget) {
       double tb=now_s();
       /* the whole batch is always hashed -- no early-out on a found block --
          so the hashrate reflects real compute. On a low-difficulty testnet a
@@ -432,13 +528,30 @@ static void *worker(void *arg) {
     }
 
     if(found){
-      NSMutableData *block=[tbD mutableCopy];
-      u8 *bb=block.mutableBytes;
-      if(noff+4<=(int)block.length){
-        bb[noff]=(u8)win; bb[noff+1]=(u8)(win>>8);
-        bb[noff+2]=(u8)(win>>16); bb[noff+3]=(u8)(win>>24);
-        NSDictionary *sr=json_rpc(@"submit_block",@[data2hex(block)]);
-        if(sr && [sr[@"status"] isEqualToString:@"OK"]) blocks++;
+      if (pool_mode_now) {
+        /* Pool mode: report the share to the pool. The pool checks the
+         * `full_block` flag and forwards to the daemon if the nonce
+         * also meets network_difficulty -- and credits us with the
+         * block-find bonus + the round's reward share. We re-check
+         * net_diff here so the pool knows when to escalate to a
+         * submitblock instead of just counting a share. */
+        u8 blob[256]; memcpy(blob,hb,hb_len);
+        blob[noff]=(u8)win; blob[noff+1]=(u8)(win>>8);
+        blob[noff+2]=(u8)(win>>16); blob[noff+3]=(u8)(win>>24);
+        u8 mh[32]; lattice_hash_ds(blob,hb_len,ds,mh);
+        int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
+        NSDictionary *sr = pool_submit_share(job_id, mine_to, win, is_full);
+        if (sr && [sr[@"block"] boolValue]) blocks++;
+      } else {
+        /* Solo mode (original path): submit the full block to the daemon. */
+        NSMutableData *block=[tbD mutableCopy];
+        u8 *bb=block.mutableBytes;
+        if(noff+4<=(int)block.length){
+          bb[noff]=(u8)win; bb[noff+1]=(u8)(win>>8);
+          bb[noff+2]=(u8)(win>>16); bb[noff+3]=(u8)(win>>24);
+          NSDictionary *sr=json_rpc(@"submit_block",@[data2hex(block)]);
+          if(sr && [sr[@"status"] isEqualToString:@"OK"]) blocks++;
+        }
       }
       worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
     }
@@ -530,6 +643,21 @@ void miner_set_node(const char *host, int port) {
     g_node_host[sizeof(g_node_host)-1] = 0;
   }
   if (port > 0 && port < 65536) g_node_port = port;
+  pthread_mutex_unlock(&g_lock);
+}
+
+void miner_set_pool_config(int enabled, const char *url) {
+  pthread_mutex_lock(&g_lock);
+  g_pool_enabled = enabled ? 1 : 0;
+  if (url && url[0]) {
+    /* Strip a trailing slash so we can append "/pool/job" cleanly. */
+    size_t len = strlen(url);
+    char tmp[sizeof(g_pool_url)];
+    strncpy(tmp, url, sizeof(tmp)-1);
+    tmp[sizeof(tmp)-1] = 0;
+    if (len > 0 && tmp[strlen(tmp)-1] == '/') tmp[strlen(tmp)-1] = 0;
+    strcpy(g_pool_url, tmp);
+  }
   pthread_mutex_unlock(&g_lock);
 }
 

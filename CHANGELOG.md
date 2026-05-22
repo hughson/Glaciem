@@ -14,6 +14,49 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.6] – 2026-05-22
+
+Mac-only release. Adds a **POOL** mining mode alongside the existing
+SOLO behavior. Lets the Mac miner connect to the official pool at
+**glaciem-pool.frostmine.workers.dev** — or any compatible pool — and
+get proportional payouts based on share contribution.
+
+Pool infrastructure ships as a separate piece (`pool/` directory in
+the repo); the Mac is the first client. Windows / Linux / Android
+roll out in a follow-up.
+
+### Added
+- New SOLO/POOL toggle + pool URL field in the Settings sheet
+  (`RimeMiner.swift`). Persisted to UserDefaults as `poolEnabled`
+  and `poolURL`. Defaults to SOLO (existing behavior unchanged) and
+  the official pool URL.
+- `miner_set_pool_config(int enabled, const char *url)` C bridge
+  (`miner_core.h` + `miner_core.m`) so the Swift UI can flip the
+  mining mode at runtime.
+- Pool-aware mining loop (`miner_core.m::worker()`). When pool mode
+  is on, the loop:
+  - Fetches each template via `POST {pool_url}/pool/job` with the
+    miner's payout wallet, instead of `get_block_template` on the
+    daemon.
+  - Uses the pool's `share_difficulty` for the inner meets-target
+    check, so shares come ~1000× more frequently than full blocks.
+  - Reports every found share via `POST {pool_url}/pool/submit`,
+    setting `full_block: true` when the share's hash also meets the
+    network difficulty (the pool then forwards to the daemon as
+    submitblock).
+- Pool jobs refresh every 2.5s in pool mode (vs 10s in solo mode);
+  pool's upstream is cached at the proxy so frequent fetches are cheap.
+
+### Notes
+- v1 trust-mode pool: shares are NOT re-verified server-side yet.
+  Acceptable for the small early network; a hostile miner could
+  falsely claim shares. Server-side Lattice verification is v2.
+- Pool fee is 0% at launch. Auto-payout threshold is 0.1 GLAC.
+  See <https://glaciem-pool.frostmine.workers.dev/> for live stats.
+- Windows / Linux / Android stay at v1.1.5; same pool-mode patch
+  coming as a follow-up after this Mac change is verified clean
+  in production.
+
 ## [1.1.5] – 2026-05-22
 
 Android-only. Fixes a long-standing UX bug where the START / STOP mining
@@ -161,7 +204,8 @@ over-aggressive polling intervals and removing a wasted admin-endpoint call.
 - Lattice is an original proof-of-work and has not had external
   cryptographic review. Mine at your own risk.
 
-[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.5...HEAD
+[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.6...HEAD
+[1.1.6]: https://github.com/hughson/Glaciem/releases/tag/v1.1.6
 [1.1.5]: https://github.com/hughson/Glaciem/releases/tag/v1.1.5
 [1.1.4]: https://github.com/hughson/Glaciem/releases/tag/v1.1.4
 [1.1.3]: https://github.com/hughson/Glaciem/releases/tag/v1.1.3

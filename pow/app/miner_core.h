@@ -45,6 +45,18 @@ const char *miner_history(void); /* recent sends/sweeps/receives, newest first, 
 /* set the rimed node this app connects to (host + RPC port; UI persists it) */
 void        miner_set_node(const char *host, int port);
 
+/* v1.1.6: configure pool mode.
+ *   enabled = 1 -> fetch jobs from POST {url}/pool/job and submit shares
+ *                  to POST {url}/pool/submit instead of talking to a
+ *                  daemon directly. Block rewards go to the pool wallet;
+ *                  the pool credits miners proportionally to share count
+ *                  and auto-pays via the pool's wallet-rpc.
+ *   enabled = 0 -> classic solo mining via the configured daemon (see
+ *                  miner_set_node above). This is the original behavior.
+ * `url` is the pool's base URL (e.g. "https://glaciem-pool.frostmine.workers.dev").
+ * Safe to call at any time; takes effect on the next mining-loop iteration. */
+void        miner_set_pool_config(int enabled, const char *url);
+
 /* Open the app's embedded wallet at `path`. `seed` non-empty recovers a wallet
    for that 25-word mnemonic (replacing any existing file); `seed` empty/NULL
    opens the existing wallet file. Runs on a background thread -- the scan can
