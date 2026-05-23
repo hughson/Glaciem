@@ -15,6 +15,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <stdatomic.h>
 #include <sys/sysctl.h>
 
 #include "miner_core.h"
@@ -203,9 +204,15 @@ static dispatch_queue_t pool_submit_queue(void) {
  *   3. rebuilds the dataset from the freshly-received seed_hash
  * That self-corrects whatever drift caused the rejection — usually an
  * epoch transition the miner missed. Honest miners never see this code
- * path; it only kicks in when something has genuinely gone wrong. */
-static int g_consecutive_invalid    = 0;
-static int g_force_refresh          = 0;
+ * path; it only kicks in when something has genuinely gone wrong.
+ *
+ * v1.1.11: switched from g_lock-protected ints to <stdatomic.h>.
+ * Earlier code grabbed g_lock per share response, but g_lock is also
+ * acquired by every dispatch_apply thread on best-bits and winner
+ * updates -- adding a second contender across 8 cores measurably
+ * slowed hashing. Atomics make these counters lock-free. */
+static atomic_int g_consecutive_invalid    = 0;
+static atomic_int g_force_refresh          = 0;
 #define CONSECUTIVE_INVALID_THRESHOLD 3
 
 static void submit_share_async(NSString *jobId, NSString *wallet,
@@ -221,10 +228,13 @@ static void submit_share_async(NSString *jobId, NSString *wallet,
     if (accepted || is_block) {
       // A good share clears the consecutive-invalid streak; one
       // transient bad submit doesn't accumulate forever.
-      pthread_mutex_lock(&g_lock);
-      if (is_block) g_stats.blocks_found++;
-      g_consecutive_invalid = 0;
-      pthread_mutex_unlock(&g_lock);
+      atomic_store(&g_consecutive_invalid, 0);
+      if (is_block) {
+        // blocks_found is in g_stats which is still mutex-protected.
+        pthread_mutex_lock(&g_lock);
+        g_stats.blocks_found++;
+        pthread_mutex_unlock(&g_lock);
+      }
       return;
     }
 
@@ -233,15 +243,12 @@ static void submit_share_async(NSString *jobId, NSString *wallet,
     // "duplicate", or "rate limit" are normal and shouldn't trip the
     // force-refresh logic.
     if ([reason isEqualToString:@"invalid share"]) {
-      pthread_mutex_lock(&g_lock);
-      g_consecutive_invalid++;
-      int n = g_consecutive_invalid;
+      int n = atomic_fetch_add(&g_consecutive_invalid, 1) + 1;
       if (n >= CONSECUTIVE_INVALID_THRESHOLD) {
-        g_force_refresh = 1;
+        atomic_store(&g_force_refresh, 1);
         NSLog(@"[miner] %d consecutive invalid-share rejections from pool; "
               @"forcing template + dataset refresh", n);
       }
-      pthread_mutex_unlock(&g_lock);
     }
   });
 }
@@ -539,15 +546,15 @@ static void *worker(void *arg) {
      * from the next job's seed_hash. The OUTER iteration also runs
      * pool_get_job below, so the combination of (have_ds = 0 + a fresh
      * job fetch) guarantees we re-sync against whatever the pool now
-     * thinks the current epoch is. */
-    pthread_mutex_lock(&g_lock);
-    if (g_force_refresh) {
-      g_force_refresh = 0;
-      g_consecutive_invalid = 0;
+     * thinks the current epoch is.
+     * v1.1.11: lock-free check via atomic_exchange. The flag is rare
+     * (only ever set when something has genuinely gone wrong), so the
+     * atomic exchange has no contention cost in the common path. */
+    if (atomic_exchange(&g_force_refresh, 0)) {
+      atomic_store(&g_consecutive_invalid, 0);
       have_ds = 0;
       memset(cur_seed, 0, sizeof cur_seed);
     }
-    pthread_mutex_unlock(&g_lock);
 
     /* v1.1.6: in pool mode, fetch the job from the pool instead of
      * calling get_block_template on the daemon. The pool injects ITS

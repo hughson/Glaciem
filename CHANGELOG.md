@@ -14,6 +14,49 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.11] – 2026-05-23
+
+Miner self-heal + richer pool diagnostics, prompted by a real epoch-
+transition glitch today that auto-banned an honest wallet at the v1.1.10
+threshold.
+
+### Fixed
+- **Mac** (`pow/app/miner_core.m`): lock-free counters. The v1.1.10
+  self-heal added per-share `g_lock` acquisitions in the async
+  submitter; the same lock is grabbed by every dispatch_apply worker on
+  best-bits + winner updates, so the new contention slowed hashing
+  noticeably. Switched the consecutive-invalid + force-refresh state
+  to `<stdatomic.h>` — no lock, no contention, no slowdown.
+
+### Added
+- **All four miners**: defensive self-heal on consecutive invalid-share
+  rejections. After 3 in a row, the miner drops its cached epoch
+  dataset, re-fetches the job from the pool, and rebuilds against the
+  fresh `seed_hash`. Recovers from missed epoch transitions in seconds
+  instead of accumulating toward a pool-side ban.
+- **Pool server**: per-share invalid-rejection logging. Every
+  `"invalid share"` response now records the seed prefix, share
+  difficulty, nonce, computed hash, and top-64 bits of that hash.
+  Lets the operator tell apart honest-but-stale (hash close to target)
+  vs cheating (uniformly random hash) vs a verifier bug the next time
+  this happens.
+- **Pool server** (`pool_verify.c`): new `pool_verify_share_v2`
+  function returns the failing hash alongside the verdict so the
+  Python side can include it in logs.
+
+### Changed
+- **Pool server**: invalid-share ban threshold raised from 10 to 25.
+  An early-warning log fires at 10 so operators see a wallet in trouble
+  before it's banned. Successful share resets the bad-count to 0 so a
+  transient blip doesn't accumulate.
+
+### Notes
+- v1.1.11 is the only patch we'd urgently recommend over v1.1.10 to a
+  Mac user; the other three platforms are functionally identical to
+  v1.1.10 (Windows/Linux/Android already use thread-local counters
+  inside synchronous submission paths, so they had no contention to
+  fix). They get the version bump for catalog consistency.
+
 ## [1.1.10] – 2026-05-23
 
 Closes the remaining miner/pool hashrate gap and a handful of related
