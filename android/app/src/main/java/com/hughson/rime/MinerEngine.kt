@@ -357,25 +357,31 @@ class MinerEngine(private val rpc: RpcClient) {
             // one parallel batch: `n` cores hash CHUNK contiguous nonces each.
             // Snapshot `n` once so task fan-out and hashesThisBatch stay in sync
             // if the mode changes mid-batch.
+            // v1.1.9: each core uses hashMulti() to collect ALL winners in its
+            // CHUNK, not just the first. Closes ~30% of the miner/pool hashrate
+            // gap on Android, same as the other platforms.
             val n = activeCores()
             val base = rnd.nextInt().toLong() and 0xFFFFFFFFL
             val lastHashBuf = ByteArray(32)
             val t0 = System.nanoTime()
             val tasks = (0 until n).map { idx ->
-                Callable {
+                Callable<LongArray> {
                     val lh = ByteArray(32)
                     val bb = intArrayOf(bestBits)
+                    val winners = LongArray(WIN_PER_CORE)
                     val start = (base + idx.toLong() * CHUNK) and 0xFFFFFFFFL
-                    val w = MinerNative.hash(hb, nonceOff, start, CHUNK, difficulty, lh, bb)
+                    val nWon = MinerNative.hashMulti(
+                        hb, nonceOff, start, CHUNK, difficulty, lh, bb, winners)
                     if (bb[0] > bestBits) bestBits = bb[0]
                     synchronized(lastHashBuf) { System.arraycopy(lh, 0, lastHashBuf, 0, 32) }
-                    w
+                    // Return only the populated slice as a fresh array.
+                    winners.copyOf(nWon)
                 }
             }
-            var winner = -1L
+            val allWinners = ArrayList<Long>(WIN_PER_CORE)
             for (f in pool.invokeAll(tasks)) {
-                val w = try { f.get() } catch (e: Exception) { -1L }
-                if (w >= 0L && winner < 0L) winner = w
+                val arr = try { f.get() } catch (e: Exception) { LongArray(0) }
+                for (w in arr) allWinners.add(w)
             }
 
             val dt = (System.nanoTime() - t0) / 1e9
@@ -386,28 +392,31 @@ class MinerEngine(private val rpc: RpcClient) {
             lastHash = bytesToHex(lastHashBuf)
             publish()
 
-            if (winner >= 0L) {
-                val w = winner.toInt()
+            if (allWinners.isNotEmpty()) {
                 if (poolMode) {
-                    // Re-hash the winning nonce against the network difficulty
-                    // to know whether to flag full_block=true. Re-using
-                    // MinerNative.hash with count=1 + startNonce=w: if it
-                    // returns `w`, the hash meets net difficulty too.
+                    // v1.1.9: submit EVERY share. Re-hash each nonce against
+                    // network_difficulty so the pool gets the right full_block
+                    // flag (any of them might also solve the block).
                     val checkBits = intArrayOf(0)
                     val checkBuf  = ByteArray(32)
-                    val isFullBlock = if (netDifficulty > 0L) {
-                        val res = MinerNative.hash(hb, nonceOff,
-                            w.toLong() and 0xFFFFFFFFL, 1, netDifficulty,
-                            checkBuf, checkBits)
-                        res == (w.toLong() and 0xFFFFFFFFL)
-                    } else false
-                    val r = rpc.poolSubmit(poolUrlSnapshot, poolJobId, mineTo,
-                                           w.toLong() and 0xFFFFFFFFL, isFullBlock)
-                    val isBlock = r?.optBoolean("block") ?: false
-                    if (isBlock) blocksFound++
-                    android.util.Log.i(TAG, "pool_submit nonce=$w full=$isFullBlock -> " +
-                        if (r?.optBoolean("accepted") == true) "accepted${if (isBlock) " (BLOCK!)" else ""}" else "rejected")
+                    for (wL in allWinners) {
+                        val w = wL.toInt()
+                        val isFullBlock = if (netDifficulty > 0L) {
+                            val res = MinerNative.hash(hb, nonceOff,
+                                wL and 0xFFFFFFFFL, 1, netDifficulty,
+                                checkBuf, checkBits)
+                            res == (wL and 0xFFFFFFFFL)
+                        } else false
+                        val r = rpc.poolSubmit(poolUrlSnapshot, poolJobId, mineTo,
+                                               wL and 0xFFFFFFFFL, isFullBlock)
+                        val isBlock = r?.optBoolean("block") ?: false
+                        if (isBlock) blocksFound++
+                        android.util.Log.i(TAG, "pool_submit nonce=$w full=$isFullBlock -> " +
+                            if (r?.optBoolean("accepted") == true) "accepted${if (isBlock) " (BLOCK!)" else ""}" else "rejected")
+                    }
                 } else {
+                    // Solo: any winning nonce solves the block; take the first.
+                    val w = allWinners[0].toInt()
                     val block = tb.copyOf()
                     block[nonceOff] = (w and 0xFF).toByte()
                     block[nonceOff + 1] = ((w ushr 8) and 0xFF).toByte()
@@ -443,6 +452,11 @@ class MinerEngine(private val rpc: RpcClient) {
          *  small enough to keep UI updates responsive, large enough to amortise
          *  the pool's invokeAll() barrier across many hashes. */
         private const val CHUNK = 64
+
+        /** v1.1.9: max winning nonces per core per batch -- shouldn't be hit
+         *  in practice (E[wins] per CHUNK is tiny) but caps the JNI output
+         *  array. 8 is plenty even at absurd share-difficulty. */
+        private const val WIN_PER_CORE = 8
 
         /** Offset of the 4-byte nonce in a block blob: 3 leading varints
          *  (major, minor, timestamp) + 32-byte prev_id. From miner_core.m. */

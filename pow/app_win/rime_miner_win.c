@@ -453,13 +453,18 @@ static double now_s(void) {
 static u64 *g_dataset;          /* 4 MiB epoch dataset, shared read-only */
 static int  g_threads;
 
-/* one worker hashes a contiguous run of nonces with Lattice */
+/* one worker hashes a contiguous run of nonces with Lattice
+ *
+ * v1.1.9: collect ALL nonces that meet target, not just the first.
+ * Each worker has its own thread-local winners[] (no locking needed --
+ * the main loop reads them only after WaitForMultipleObjects). */
+#define MJ_WIN_MAX 16
 typedef struct {
   const u8 *hb; int hb_len; int noff;
   uint64_t difficulty;
   uint32_t nonce_start; int count;
-  int      winner;          /* 1 if a nonce met target, else 0 */
-  uint32_t winner_nonce;
+  int      n_winners;
+  uint32_t winners[MJ_WIN_MAX];
   int      best_bits;
 } mjob_t;
 
@@ -467,7 +472,7 @@ static unsigned __stdcall mine_worker(void *arg) {
   mjob_t *j = (mjob_t*)arg;
   u8 blob[256];
   memcpy(blob, j->hb, (size_t)j->hb_len);
-  j->winner = 0; j->winner_nonce = 0; j->best_bits = 0;
+  j->n_winners = 0; j->best_bits = 0;
   for (int i=0;i<j->count;i++) {
     uint32_t nn = j->nonce_start + (uint32_t)i;
     blob[j->noff+0]=(u8)nn;        blob[j->noff+1]=(u8)(nn>>8);
@@ -476,8 +481,8 @@ static unsigned __stdcall mine_worker(void *arg) {
     lattice_hash_ds(blob, (size_t)j->hb_len, g_dataset, h);
     int z = lz_bits(h);
     if (z > j->best_bits) j->best_bits = z;
-    if (!j->winner && meets_target(h, j->difficulty)) {
-      j->winner = 1; j->winner_nonce = nn;
+    if (j->n_winners < MJ_WIN_MAX && meets_target(h, j->difficulty)) {
+      j->winners[j->n_winners++] = nn;
     }
   }
   return 0;
@@ -653,13 +658,15 @@ static unsigned __stdcall mine_thread(void *arg) {
     }
     WaitForMultipleObjects(g_threads,th,TRUE,INFINITE);
 
-    int have_winner=0; uint32_t winner_nonce=0;
+    /* v1.1.9: flatten every worker's winners list into one buffer. */
+    uint32_t all_winners[MAX_THREADS * MJ_WIN_MAX];
+    int n_all_winners = 0;
     for (int t=0;t<g_threads;t++) {
       CloseHandle(th[t]);
       if (jb[t].best_bits>best) best=jb[t].best_bits;
-      if (jb[t].winner) {
-        if (!have_winner || jb[t].winner_nonce<winner_nonce) {
-          have_winner=1; winner_nonce=jb[t].winner_nonce;
+      for (int k=0; k<jb[t].n_winners; k++) {
+        if (n_all_winners < (int)(sizeof(all_winners)/sizeof(all_winners[0]))) {
+          all_winners[n_all_winners++] = jb[t].winners[k];
         }
       }
     }
@@ -673,26 +680,28 @@ static unsigned __stdcall mine_thread(void *arg) {
     g_sh.hashrate=hr; g_sh.total=total; g_sh.best_bits=best;
     LeaveCriticalSection(&g_sh.cs);
 
-    /* submit the winning nonce */
-    if (have_winner && noff+4<=tb_len) {
+    /* submit every winning nonce (in pool mode) or the first one (solo). */
+    if (n_all_winners > 0 && noff+4<=tb_len) {
       if (pool_mode_now) {
-        /* v1.1.7: re-hash with the winning nonce against network_diff to
-         * decide whether to flag full_block=true (so the pool forwards
-         * to the daemon as submitblock). */
-        u8 hb_check[256]; memcpy(hb_check, hb, hb_len);
-        hb_check[noff+0]=(u8)winner_nonce;
-        hb_check[noff+1]=(u8)(winner_nonce>>8);
-        hb_check[noff+2]=(u8)(winner_nonce>>16);
-        hb_check[noff+3]=(u8)(winner_nonce>>24);
-        u8 mh[32];
-        lattice_hash_ds(hb_check, hb_len, g_dataset, mh);
-        int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
-        char sr[2048];
-        if (pool_submit_share(job_id, waddr, winner_nonce, is_full, sr, sizeof sr)) {
-          int got_block = strstr(sr, "\"block\":true") != NULL;
-          if (got_block) blocks++;
+        for (int k = 0; k < n_all_winners && g_sh.running; k++) {
+          uint32_t winner_nonce = all_winners[k];
+          u8 hb_check[256]; memcpy(hb_check, hb, hb_len);
+          hb_check[noff+0]=(u8)winner_nonce;
+          hb_check[noff+1]=(u8)(winner_nonce>>8);
+          hb_check[noff+2]=(u8)(winner_nonce>>16);
+          hb_check[noff+3]=(u8)(winner_nonce>>24);
+          u8 mh[32];
+          lattice_hash_ds(hb_check, hb_len, g_dataset, mh);
+          int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
+          char sr[2048];
+          if (pool_submit_share(job_id, waddr, winner_nonce, is_full, sr, sizeof sr)) {
+            int got_block = strstr(sr, "\"block\":true") != NULL;
+            if (got_block) blocks++;
+          }
         }
       } else {
+        /* Solo: any winner solves the block; take the first. */
+        uint32_t winner_nonce = all_winners[0];
         tb[noff+0]=(u8)winner_nonce;       tb[noff+1]=(u8)(winner_nonce>>8);
         tb[noff+2]=(u8)(winner_nonce>>16); tb[noff+3]=(u8)(winner_nonce>>24);
         char *blockHex = malloc((size_t)tb_len*2+1);

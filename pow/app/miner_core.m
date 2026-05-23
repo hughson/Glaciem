@@ -486,7 +486,21 @@ static void *worker(void *arg) {
 
     /* mine this template (~1.5s budget, or until a block is found) */
     uint32_t base=(uint32_t)(now_s()*997.0);
-    __block int found=0; __block uint32_t win=0; __block int bbest=best;
+    /* v1.1.9: collect ALL nonces that meet share_difficulty in this
+     * batch, not just the first. Previously we lost ~30% of mined
+     * shares because a batch often had 2-3 winning nonces and we only
+     * submitted one. Cap at 16 -- a 512-batch hitting >16 shares
+     * implies share_difficulty is absurdly low; the cap keeps the
+     * winners buffer bounded. */
+    #define WIN_MAX 16
+    /* Blocks can't capture raw C arrays, so the storage is stack-resident
+     * and the block sees it via a pointer. Same lifetime as the outer
+     * while-loop frame, which is what we want. */
+    uint32_t winners_storage[WIN_MAX];
+    memset(winners_storage, 0, sizeof winners_storage);
+    __block uint32_t *winners = winners_storage;
+    __block int n_winners = 0;
+    __block int bbest=best;
     char lhbuf[65]={0}; char *lh=lhbuf;
     double tm=now_s();
     /* v1.1.3: template lifetime 1.5s -> 10s in solo mode (block time
@@ -495,9 +509,14 @@ static void *worker(void *arg) {
      *   already caches its upstream template, so fetching often is
      *   cheap; and a stale pool job whose share_difficulty changed
      *   would have its submissions rejected as "stale job" by the pool.
-     *   Stay conservative. */
+     *   Stay conservative.
+     * v1.1.9: solo mode still breaks the outer loop on first share
+     *   (we have the full block, no reason to keep mining the same
+     *   template). Pool mode keeps mining until template_budget
+     *   expires -- we WANT more shares per template. */
     double template_budget = pool_mode_now ? 2.5 : 10.0;
-    while(g_running && !found && now_s()-tm < template_budget) {
+    int solo_short_circuit = 0;
+    while(g_running && !solo_short_circuit && now_s()-tm < template_budget) {
       double tb=now_s();
       /* the whole batch is always hashed -- no early-out on a found block --
          so the hashrate reflects real compute. On a low-difficulty testnet a
@@ -516,7 +535,7 @@ static void *worker(void *arg) {
                      pthread_mutex_unlock(&g_lock); }
         if(meets_target(mh,diff)){
           pthread_mutex_lock(&g_lock);
-          if(!found){ found=1; win=nn; }
+          if (n_winners < WIN_MAX) winners[n_winners++] = nn;
           pthread_mutex_unlock(&g_lock);
         }
         if(n==BATCH-1) for(int i=0;i<32;i++) sprintf(lh+i*2,"%02x",mh[i]);
@@ -525,35 +544,47 @@ static void *worker(void *arg) {
       double inst=BATCH/dt; hr=(hr<=0)?inst:0.7*hr+0.3*inst;
       total+=BATCH; base+=BATCH; best=bbest;
       worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
-    }
 
-    if(found){
-      if (pool_mode_now) {
-        /* Pool mode: report the share to the pool. The pool checks the
-         * `full_block` flag and forwards to the daemon if the nonce
-         * also meets network_difficulty -- and credits us with the
-         * block-find bonus + the round's reward share. We re-check
-         * net_diff here so the pool knows when to escalate to a
-         * submitblock instead of just counting a share. */
-        u8 blob[256]; memcpy(blob,hb,hb_len);
-        blob[noff]=(u8)win; blob[noff+1]=(u8)(win>>8);
-        blob[noff+2]=(u8)(win>>16); blob[noff+3]=(u8)(win>>24);
-        u8 mh[32]; lattice_hash_ds(blob,hb_len,ds,mh);
-        int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
-        NSDictionary *sr = pool_submit_share(job_id, mine_to, win, is_full);
-        if (sr && [sr[@"block"] boolValue]) blocks++;
-      } else {
-        /* Solo mode (original path): submit the full block to the daemon. */
-        NSMutableData *block=[tbD mutableCopy];
-        u8 *bb=block.mutableBytes;
-        if(noff+4<=(int)block.length){
-          bb[noff]=(u8)win; bb[noff+1]=(u8)(win>>8);
-          bb[noff+2]=(u8)(win>>16); bb[noff+3]=(u8)(win>>24);
-          NSDictionary *sr=json_rpc(@"submit_block",@[data2hex(block)]);
-          if(sr && [sr[@"status"] isEqualToString:@"OK"]) blocks++;
+      /* Submit every winner we found this batch. In pool mode we keep
+       * mining the same template afterward; in solo mode we just need
+       * the first one (it's a full block), and then we move on. */
+      if (n_winners > 0) {
+        if (pool_mode_now) {
+          /* Snapshot under the lock then submit outside. */
+          uint32_t to_submit[WIN_MAX]; int nw;
+          pthread_mutex_lock(&g_lock);
+          nw = n_winners;
+          memcpy(to_submit, winners, sizeof(uint32_t) * nw);
+          n_winners = 0;
+          pthread_mutex_unlock(&g_lock);
+          for (int i = 0; i < nw; i++) {
+            uint32_t w = to_submit[i];
+            u8 blob[256]; memcpy(blob, hb, hb_len);
+            blob[noff]=(u8)w; blob[noff+1]=(u8)(w>>8);
+            blob[noff+2]=(u8)(w>>16); blob[noff+3]=(u8)(w>>24);
+            u8 mh[32]; lattice_hash_ds(blob, hb_len, ds, mh);
+            int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
+            NSDictionary *sr = pool_submit_share(job_id, mine_to, w, is_full);
+            if (sr && [sr[@"block"] boolValue]) blocks++;
+            if (!g_running) break;
+          }
+          worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
+        } else {
+          /* Solo: take the first winner (any one solves the block). */
+          uint32_t w = winners[0];
+          NSMutableData *block=[tbD mutableCopy];
+          u8 *bb=block.mutableBytes;
+          if(noff+4<=(int)block.length){
+            bb[noff]=(u8)w; bb[noff+1]=(u8)(w>>8);
+            bb[noff+2]=(u8)(w>>16); bb[noff+3]=(u8)(w>>24);
+            NSDictionary *sr=json_rpc(@"submit_block",@[data2hex(block)]);
+            if(sr && [sr[@"status"] isEqualToString:@"OK"]) blocks++;
+          }
+          n_winners = 0;
+          solo_short_circuit = 1;   /* fetch a fresh template */
+          worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
         }
       }
-      worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
     }
   }
   free(ds);

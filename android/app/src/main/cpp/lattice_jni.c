@@ -140,6 +140,61 @@ Java_com_hughson_rime_MinerNative_hash(JNIEnv *env, jobject thiz,
   return winner;
 }
 
+/* v1.1.9: hashMulti -- like hash(), but collects EVERY nonce that meets
+ * the target, not just the first. outWinners is a long[] the caller
+ * provides; this writes up to outWinners.length winning nonces and
+ * returns the count actually written. Closes the miner/pool hashrate
+ * gap caused by under-reporting batches with 2+ winning nonces. */
+JNIEXPORT jint JNICALL
+Java_com_hughson_rime_MinerNative_hashMulti(JNIEnv *env, jobject thiz,
+    jbyteArray blob_, jint nonceOffset, jlong startNonce, jint count,
+    jlong difficulty, jbyteArray outLastHash_, jintArray outBestBits_,
+    jlongArray outWinners_) {
+  (void)thiz;
+  jsize blen = (*env)->GetArrayLength(env, blob_);
+  if (blen <= 0 || blen > 250 || nonceOffset < 0 || nonceOffset + 4 > blen)
+    return 0;
+
+  u8 blob[256];
+  (*env)->GetByteArrayRegion(env, blob_, 0, blen, (jbyte *)blob);
+
+  const u64 *ds = g_dataset;
+  if (!ds) return 0;
+
+  int best = 0;
+  jint *bb = outBestBits_ ? (*env)->GetIntArrayElements(env, outBestBits_, NULL)
+                          : NULL;
+  if (bb) best = bb[0];
+
+  jsize cap = outWinners_ ? (*env)->GetArrayLength(env, outWinners_) : 0;
+  jlong *wbuf = outWinners_ ? (*env)->GetLongArrayElements(env, outWinners_, NULL)
+                            : NULL;
+  jint n_winners = 0;
+
+  u8 lasth[32] = {0};
+  for (jint k = 0; k < count; k++) {
+    uint32_t nn = (uint32_t)(startNonce + k);
+    blob[nonceOffset]     = (u8)nn;
+    blob[nonceOffset + 1] = (u8)(nn >> 8);
+    blob[nonceOffset + 2] = (u8)(nn >> 16);
+    blob[nonceOffset + 3] = (u8)(nn >> 24);
+
+    u8 h[32];
+    lattice_hash_ds(blob, (size_t)blen, ds, h);
+
+    int z = lz_bits(h); if (z > best) best = z;
+    memcpy(lasth, h, 32);
+    if (wbuf && n_winners < cap && meets_target(h, (uint64_t)difficulty)) {
+      wbuf[n_winners++] = (jlong)(startNonce + k);
+    }
+  }
+
+  if (bb) { bb[0] = best; (*env)->ReleaseIntArrayElements(env, outBestBits_, bb, 0); }
+  if (wbuf) (*env)->ReleaseLongArrayElements(env, outWinners_, wbuf, 0);
+  if (outLastHash_) (*env)->SetByteArrayRegion(env, outLastHash_, 0, 32, (jbyte *)lasth);
+  return n_winners;
+}
+
 /* generateAddress(): generate a fresh Rime wallet via the keygen library
  * (Rime's own crypto). Returns String[2] = { testnet address, 25-word seed },
  * or null on failure. */

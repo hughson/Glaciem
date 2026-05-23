@@ -30,6 +30,23 @@ object MinerNative {
     ): Long
 
     /**
+     * v1.1.9: like [hash], but fills [outWinners] with EVERY nonce that
+     * meets `difficulty` (up to outWinners.size). Returns the count
+     * actually written. Closes the miner/pool hashrate gap caused by
+     * under-reporting batches with 2+ winning nonces.
+     */
+    external fun hashMulti(
+        blob: ByteArray,
+        nonceOffset: Int,
+        startNonce: Long,
+        count: Int,
+        difficulty: Long,
+        outLastHash: ByteArray,
+        outBestBits: IntArray,
+        outWinners: LongArray,
+    ): Int
+
+    /**
      * Generate a fresh Rime wallet using Rime's own crypto (the keygen
      * library). Returns [address, 25-word recovery seed], or null on failure.
      */

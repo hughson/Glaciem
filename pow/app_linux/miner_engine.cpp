@@ -353,11 +353,18 @@ void WorkerThread::run() {
         }
 
         // hash one batch -- N workers, CHUNK nonces each, parallel
+        // v1.1.9: collect ALL winners (not just first). Honest miners
+        // often produce 2-3 shares per batch at pool share-difficulty;
+        // submitting all of them closes most of the miner/pool hashrate
+        // gap and means more shares = more proportional payout.
         uint32_t base = (uint32_t)(nowSec() * 131.0);
-        std::atomic<int> winner{-1};
+        constexpr int WIN_MAX = 32;
+        uint32_t winners[WIN_MAX] = {0};
+        std::atomic<int> n_winners{0};
         std::atomic<int> bestBitsBatch{best};
         uint8_t lastHashBuf[32] = {0};
         QMutex lhMu;
+        QMutex winMu;
 
         double tb_start = nowSec();
         std::vector<std::thread> workers;
@@ -379,9 +386,11 @@ void WorkerThread::run() {
                     int prev = bestBitsBatch.load();
                     while (z > prev && !bestBitsBatch.compare_exchange_weak(prev, z))
                         ;
-                    if (winner.load() < 0 && meetsTarget(h, diff)) {
-                        int expected = -1;
-                        winner.compare_exchange_strong(expected, (int)nn);
+                    if (meetsTarget(h, diff)) {
+                        QMutexLocker lk(&winMu);
+                        if (n_winners.load() < WIN_MAX) {
+                            winners[n_winners.fetch_add(1)] = nn;
+                        }
                     }
                     if (i == CHUNK - 1) {
                         QMutexLocker lk(&lhMu);
@@ -414,29 +423,34 @@ void WorkerThread::run() {
             m_e->m_lastHash = QString::fromLatin1(lhHex, 64);
         }
 
-        int win = winner.load();
-        if (win >= 0 && noff + 4 <= tb.size()) {
+        int nw = n_winners.load();
+        if (nw > 0 && noff + 4 <= tb.size()) {
             if (poolModeNow) {
-                // Re-hash the winning nonce against network_difficulty so we
-                // know whether to flag full_block=true (which tells the pool
-                // to forward as submitblock to the daemon).
-                QByteArray hbCheck = hb;
-                hbCheck[noff]     = (char)win;
-                hbCheck[noff + 1] = (char)(win >> 8);
-                hbCheck[noff + 2] = (char)(win >> 16);
-                hbCheck[noff + 3] = (char)(win >> 24);
-                uint8_t mh[32];
-                lattice_hash_ds((const uint8_t*)hbCheck.constData(),
-                                hbCheck.size(), ds.data(), mh);
-                bool isFull = (netDiff > 0) && meetsTarget(mh, netDiff);
-                auto sr = poolSubmitShare(poolUrlNow, jobId, addr,
-                                          (quint32)win, isFull);
-                if (sr.value("block").toBool()) {
-                    blocks++;
-                    QMutexLocker lk(&m_e->m_lock);
-                    m_e->m_blocksFound = blocks;
+                // Submit every share. Re-hash each nonce against
+                // network_difficulty so the pool gets the right full_block
+                // flag (any one of them might also solve the block).
+                for (int i = 0; i < nw; i++) {
+                    uint32_t win = winners[i];
+                    QByteArray hbCheck = hb;
+                    hbCheck[noff]     = (char)win;
+                    hbCheck[noff + 1] = (char)(win >> 8);
+                    hbCheck[noff + 2] = (char)(win >> 16);
+                    hbCheck[noff + 3] = (char)(win >> 24);
+                    uint8_t mh[32];
+                    lattice_hash_ds((const uint8_t*)hbCheck.constData(),
+                                    hbCheck.size(), ds.data(), mh);
+                    bool isFull = (netDiff > 0) && meetsTarget(mh, netDiff);
+                    auto sr = poolSubmitShare(poolUrlNow, jobId, addr,
+                                              (quint32)win, isFull);
+                    if (sr.value("block").toBool()) {
+                        blocks++;
+                        QMutexLocker lk(&m_e->m_lock);
+                        m_e->m_blocksFound = blocks;
+                    }
                 }
             } else {
+                // Solo: any winning nonce solves the block; take the first.
+                int win = winners[0];
                 tb[noff]     = (char)win;
                 tb[noff + 1] = (char)(win >> 8);
                 tb[noff + 2] = (char)(win >> 16);

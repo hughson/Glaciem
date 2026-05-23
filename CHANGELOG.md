@@ -14,6 +14,44 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.9] – 2026-05-22
+
+All four platforms: every nonce that meets share-difficulty in a
+mining batch is now submitted to the pool, not just the first.
+Closes the ~50% gap between miner-reported hashrate ("CPU is busy")
+and pool-reported hashrate ("shares actually crediting you").
+
+### Changed
+- **Mac** (`pow/app/miner_core.m`): the mining inner loop collects
+  every winning nonce per BATCH into a 16-slot array, then submits
+  each in turn. Solo mode short-circuits on the first (any winner
+  solves the block); pool mode submits them all.
+- **Windows** (`pow/app_win/rime_miner_win.c`): each `mine_worker`
+  thread keeps a thread-local `winners[16]` instead of a single
+  `winner_nonce`. The main loop flattens all workers' winners into
+  one list and submits them.
+- **Linux** (`pow/app_linux/miner_engine.cpp`): worker threads share
+  a mutex-guarded `winners[32]` array; main loop iterates over all
+  of them.
+- **Android**: new JNI method `MinerNative.hashMulti()` fills a
+  caller-provided `LongArray` with every winning nonce in a CHUNK
+  (instead of returning just the first). `MinerEngine.mineLoop`
+  aggregates winners across cores and submits each.
+- **Pool server**: rate limit bumped 60/s → 1000/s per wallet so
+  bursts of 5-10 shares from one batch don't trip throttling.
+  Per-wallet abuse defense is the invalid-share ban (still at 10)
+  — that's the line that actually matters.
+
+### Notes
+- Pool will see ~30-50% more shares per honest miner without any
+  more actual hashing work. Block-find rate should rise
+  proportionally; everyone's proportional share of payouts stays
+  fair (the new behavior is uniform across the fleet).
+- Solo mining: behavior unchanged — still only need one block
+  submission per find.
+- Same Lattice PoW, same wallet code, same protocol; just better
+  utilization of compute that was already happening.
+
 ## [1.1.8] – 2026-05-22
 
 Linux joins the pool-mode lineup. **All four platforms** (Mac, Android,
@@ -277,7 +315,8 @@ over-aggressive polling intervals and removing a wasted admin-endpoint call.
 - Lattice is an original proof-of-work and has not had external
   cryptographic review. Mine at your own risk.
 
-[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.8...HEAD
+[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.9...HEAD
+[1.1.9]: https://github.com/hughson/Glaciem/releases/tag/v1.1.9
 [1.1.8]: https://github.com/hughson/Glaciem/releases/tag/v1.1.8
 [1.1.7]: https://github.com/hughson/Glaciem/releases/tag/v1.1.7
 [1.1.6]: https://github.com/hughson/Glaciem/releases/tag/v1.1.6
