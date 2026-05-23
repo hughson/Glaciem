@@ -75,7 +75,7 @@ int rime_wallet_send(RimeWallet *w, const char *address,
 int rime_wallet_sweep_unmixable(RimeWallet *w, char *result, int result_cap);
 
 /* Write the recent non-coinbase transaction history (newest first) into `out`,
-   one transaction per line: "<in|out>  <±amount> RME  <status>  <date>".
+   one transaction per line: "<in|out>  <±amount> GLAC  <status>  <date>".
    Coinbase (mining-reward) entries are omitted -- on a mining wallet there are
    far too many to be useful; this shows sends, sweeps and received transfers.
    `out` should be sizeable (>= 8 KiB) -- up to 50 entries are written. */

@@ -587,7 +587,7 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
             )
             OutlinedTextField(
                 value = amount, onValueChange = { amount = it },
-                label = { Text("amount (RME)") },
+                label = { Text("amount (GLAC)") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Decimal),
                 textStyle = TextStyle(color = Color.White, fontFamily = mono, fontSize = 12.sp),

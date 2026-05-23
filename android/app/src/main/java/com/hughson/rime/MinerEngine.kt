@@ -145,7 +145,7 @@ class MinerEngine(private val rpc: RpcClient) {
 
     fun isRunning() = running
 
-    /** Convert RME to atomic units and send from the embedded wallet.
+    /** Convert GLAC to atomic units and send from the embedded wallet.
      *  Blocking -- call off the UI thread. */
     fun send(address: String, amountTmpr: Double): String {
         if (address.isBlank()) return "Enter a recipient address"
@@ -264,7 +264,17 @@ class MinerEngine(private val rpc: RpcClient) {
         startTimeNs = System.nanoTime()
         totalHashes = 0; blocksFound = 0; bestBits = 0; hashrate = 0.0
         var curSeed = ByteArray(0)
-        val rnd = Random(System.nanoTime())
+        // v1.1.10: hoisted nonce base, advances monotonically by CHUNK*n
+        // per batch. Seeded with random entropy so concurrent Android
+        // miners on the same pool don't collide on the same nonce range.
+        // Earlier code re-randomized `base` inside the loop on every
+        // iteration; on the other platforms that pattern caused 20%+
+        // pool-side duplicate rejections (same job_id, overlapping nonce
+        // window). Random-per-iteration probability of collision on
+        // Android is small (~0.0015%), but a monotonic counter matches
+        // the Mac/Linux/Windows behaviour and removes the dependence on
+        // PRNG quality.
+        var nonceBase: Long = Random(System.nanoTime()).nextInt().toLong() and 0xFFFFFFFFL
         var prevDaemon = -1
         android.util.Log.i(TAG, "mining started (mode=$miningMode, ${activeCores()}/$maxCores threads)")
 
@@ -361,7 +371,10 @@ class MinerEngine(private val rpc: RpcClient) {
             // CHUNK, not just the first. Closes ~30% of the miner/pool hashrate
             // gap on Android, same as the other platforms.
             val n = activeCores()
-            val base = rnd.nextInt().toLong() and 0xFFFFFFFFL
+            val base = nonceBase
+            // Advance for next iteration AFTER we capture the start for
+            // this one. Each core walks CHUNK nonces, n cores in total.
+            nonceBase = (nonceBase + n.toLong() * CHUNK) and 0xFFFFFFFFL
             val lastHashBuf = ByteArray(32)
             val t0 = System.nanoTime()
             val tasks = (0 until n).map { idx ->

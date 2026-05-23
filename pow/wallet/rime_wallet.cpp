@@ -247,7 +247,7 @@ int rime_wallet_send(RimeWallet *tw, const char *address,
         copy_out("broadcast failed: " + pt->errorString(), result, result_cap);
       } else {
         char line[256];
-        std::snprintf(line, sizeof line, "sent %.6f RME  (fee %.6f)",
+        std::snprintf(line, sizeof line, "sent %.6f GLAC  (fee %.6f)",
                       (double)amt / 1e12, (double)fee / 1e12);
         copy_out(line, result, result_cap);
         ok = 1;
@@ -283,7 +283,7 @@ int rime_wallet_sweep_unmixable(RimeWallet *tw, char *result, int result_cap) {
       } else {
         char line[256];
         std::snprintf(line, sizeof line,
-                      "swept %.6f RME  (fee %.6f) -- mined coins are now spendable",
+                      "swept %.6f GLAC  (fee %.6f) -- mined coins are now spendable",
                       (double)amt / 1e12, (double)fee / 1e12);
         copy_out(line, result, result_cap);
         ok = 1;
@@ -327,7 +327,7 @@ void rime_wallet_history(RimeWallet *tw, char *out, int cap) {
         if (ok) std::strftime(date, sizeof date, "%Y-%m-%d %H:%M", &tmv);
       }
       char line[200];
-      std::snprintf(line, sizeof line, "%s  %s%.6f RME  %s  %s\n",
+      std::snprintf(line, sizeof line, "%s  %s%.6f GLAC  %s  %s\n",
                     is_out ? "out" : "in ",
                     is_out ? "-" : "+",
                     (double)t->amount() / 1e12,

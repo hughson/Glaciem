@@ -14,6 +14,69 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.10] – 2026-05-23
+
+Closes the remaining miner/pool hashrate gap and a handful of related
+pool/miner UX bugs surfaced while diagnosing it. After this release a
+healthy miner reads within ~5–10% of the pool's accepted-share number
+(the residual is just one HTTP roundtrip per template fetch, ~9%).
+
+### Fixed
+- **All four miners**: monotonic nonce base. Previously each outer
+  mining-loop iteration re-initialized `base = now * constant`. In
+  pool mode the pool re-issues the same `job_id` whenever the
+  upstream template hasn't refreshed (every ~120s real block), so
+  consecutive batches walked overlapping nonce ranges and ~20% of
+  submissions were dropped server-side as duplicates. `base` is now
+  hoisted to the worker function and advances by the full batch size
+  per iteration, guaranteeing unique 32-bit nonce windows. (Windows
+  was already correct — it had the base hoisted since launch.)
+- **Mac** (`pow/app/miner_core.m`): asynchronous share submission.
+  Each winning share used to block the mining loop for the full
+  Cloudflare→pool HTTP roundtrip (~150–400 ms). Submissions now
+  fire-and-forget on a serial background queue so the worker keeps
+  hashing while shares are in flight. Cuts the wall-clock submission
+  overhead from ~40% to nearly zero.
+- **Mac** (`miner_core.m::worker_set`): wallet state preserved
+  across `miner_start`. Earlier code `memset()`-ed the whole stats
+  struct to reset mining counters, which also wiped `balance`,
+  `unlocked_balance`, `wallet_height`, etc. The UI then flashed
+  "balance 0" for the duration of the next blocking wallet refresh.
+  Now only the mining fields are zeroed; the wallet poller owns
+  its fields.
+- **Mac**: stale "RME" labels in the wallet-history strings and the
+  send-confirmation lines (`rime_wallet.cpp`) — replaced with "GLAC".
+- **Android** (`MainActivity.kt`): "amount (RME)" label on the send
+  sheet — corrected to "GLAC".
+
+### Changed
+- **Pool server** (`pool-server.py`): hashrate estimator switched
+  from EWMA-on-(share_diff/inter-arrival-time) to a 300s sliding
+  window of `sum(share_diff)/window`. The old formula was biased
+  low by ~25% because share inter-arrival times are exponentially
+  distributed and the harmonic-mean nature of `D/dt` dragged the
+  estimator under the clamp. The new formula matches the standard
+  pool hashrate definition and any miner's wall-clock measurement.
+- **Pool server**: per-reason rejection counters
+  (`rate_limit`, `stale_job`, `duplicate`, `invalid_share`,
+  `bad_request`, `banned`) exposed via `/pool/stats`. Lets the
+  operator instantly see what fraction of submitted shares are
+  being credited vs dropped, and why.
+- **Pool page**: new **PAYOUT MATURITY** card surfacing the
+  pool wallet's `balance` / `unlocked_balance` / `blocks_to_unlock`
+  with an ETA on the next coinbase output unlocking. Block rewards
+  inherit Monero's 60-confirmation coinbase lock, so a "pending X
+  GLAC" credit can sit unspendable for up to ~2 h after a block
+  lands; the card explains the lock and counts down the unlock
+  time so users don't think the pool is broken.
+
+### Notes
+- This is a miner-side fix on Mac/Linux/Android and a pool-side
+  measurement fix on the server. Existing v1.1.9 miners continue
+  to work — the duplicate-share rejections were silent on the
+  miner side; upgrading just gets every honest share through.
+- Source layout / protocol unchanged. No daemon changes.
+
 ## [1.1.9] – 2026-05-22
 
 All four platforms: every nonce that meets share-difficulty in a

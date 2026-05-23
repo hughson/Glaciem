@@ -169,6 +169,41 @@ static NSDictionary *pool_submit_share(NSString *jobId, NSString *wallet,
     @"full_block": @(is_full_block ? YES : NO),
   });
 }
+
+/* v1.1.10: fire-and-forget share submission.
+ *
+ * Through v1.1.9 the mining loop called pool_submit_share() synchronously
+ * for every winning nonce. The Cloudflare -> pool roundtrip is ~200-400 ms,
+ * and at the live share rate (~2/s) that meant ~40-80% of wall-clock time
+ * was spent blocked on the network instead of hashing. Because the local
+ * compute-only hashrate estimator only measures dispatch_apply time, the
+ * miner reported a number that the pool (correctly) could not corroborate.
+ *
+ * Off-loading submissions to a serial background queue makes the mining
+ * loop wall-clock continuous and brings the miner's reported hashrate
+ * back into agreement with the pool's accepted-share estimate. The serial
+ * queue preserves submit order, which matters because the pool dedupes
+ * (wallet, nonce) per job and we don't want concurrent submits racing. */
+static dispatch_queue_t pool_submit_queue(void) {
+  static dispatch_queue_t q = NULL;
+  static dispatch_once_t once;
+  dispatch_once(&once, ^{
+    q = dispatch_queue_create("rime.pool.submit", DISPATCH_QUEUE_SERIAL);
+  });
+  return q;
+}
+
+static void submit_share_async(NSString *jobId, NSString *wallet,
+                               uint32_t nonce, int is_full_block) {
+  dispatch_async(pool_submit_queue(), ^{
+    NSDictionary *sr = pool_submit_share(jobId, wallet, nonce, is_full_block);
+    if (sr && [sr[@"block"] boolValue]) {
+      pthread_mutex_lock(&g_lock);
+      g_stats.blocks_found++;
+      pthread_mutex_unlock(&g_lock);
+    }
+  });
+}
 /* ---- peer cache (seeds + discovered) ---------------------------------- */
 /* The Cloudflare Worker stays primary -- it absorbs the connection storm a
    difficulty-1 miner produces. The two direct-node hostnames are seed
@@ -402,10 +437,14 @@ static NSString *data2hex(NSData *d) {
 static void worker_set(int connected, double hr, uint64_t total, uint64_t height,
                        uint64_t diff, uint64_t blocks, int best, double up,
                        const char *lh) {
+  (void)blocks;  /* v1.1.10: blocks_found is now owned by the submit/solo paths
+                  * (incremented under g_lock on successful block submission);
+                  * worker_set no longer overwrites it, which would clobber
+                  * any concurrent increment from the async share-submitter. */
   pthread_mutex_lock(&g_lock);
   g_stats.daemon_connected=connected; g_stats.hashrate=hr;
   g_stats.total_hashes=total; g_stats.height=height; g_stats.difficulty=diff;
-  g_stats.blocks_found=blocks; g_stats.best_bits=best; g_stats.uptime_s=up;
+  g_stats.best_bits=best; g_stats.uptime_s=up;
   if(lh) memcpy(g_lasthash,lh,65);
   pthread_mutex_unlock(&g_lock);
 }
@@ -418,6 +457,24 @@ static void *worker(void *arg) {
   uint64_t total=0, blocks=0; int best=0;
   u8 cur_seed[32]={0}; int have_ds=0;
   u64 *ds = malloc(DATASET_WORDS*sizeof(u64));   /* v2 epoch dataset */
+  /* v1.1.10: nonce base lives the LIFETIME of the worker.
+   *
+   * Previously this was re-initialized to `now_s() * 997` on every outer
+   * iteration. In pool mode the pool re-issues the SAME job_id whenever
+   * the upstream template hasn't refreshed (~every ~120s real block),
+   * but the inner loop only mines for template_budget=2.5s before
+   * exiting and re-fetching. The new `base = now_s() * 997` then sat
+   * only ~2.5 s of "997-units" further on -- overlapping ~25% of the
+   * previous batch's nonce range. The pool's per-job dedupe set then
+   * dropped 20%+ of submissions as "duplicate", which read as pool
+   * hashrate trailing the miner by the same amount.
+   *
+   * Initializing once at worker start (with entropy so concurrent
+   * miners on the same pool start at different offsets) and letting
+   * base monotonically advance by BATCH per iteration guarantees a
+   * unique 32-bit nonce range for every batch in the session
+   * (8.4M batches before wrap -- months of continuous mining). */
+  uint32_t base = (uint32_t)(now_s() * 997.0);
 
   while(g_running) {
     char wa[160];
@@ -484,8 +541,11 @@ static void *worker(void *arg) {
       memcpy(cur_seed,seed,32); have_ds=1;
     }
 
-    /* mine this template (~1.5s budget, or until a block is found) */
-    uint32_t base=(uint32_t)(now_s()*997.0);
+    /* mine this template (~1.5s budget, or until a block is found).
+     * v1.1.10: `base` is now hoisted out of this loop -- see the comment
+     * at worker() top. It advances monotonically across all batches and
+     * all outer iterations, so we never re-walk a nonce range we've
+     * already submitted (which the pool would dedup). */
     /* v1.1.9: collect ALL nonces that meet share_difficulty in this
      * batch, not just the first. Previously we lost ~30% of mined
      * shares because a batch often had 2-3 winning nonces and we only
@@ -516,8 +576,14 @@ static void *worker(void *arg) {
      *   expires -- we WANT more shares per template. */
     double template_budget = pool_mode_now ? 2.5 : 10.0;
     int solo_short_circuit = 0;
+    /* v1.1.10: wall-clock hashrate. We measure interval END-to-END so any
+     * time the worker spends NOT inside dispatch_apply (submit prep,
+     * pool_get_job, dispatch overhead) is naturally subtracted from the
+     * effective rate. Previously inst = BATCH / dispatch_apply_time, which
+     * counted compute only -- the resulting figure could exceed the pool's
+     * wall-clock-grounded estimate by 30%+. */
+    double prev_end = now_s();
     while(g_running && !solo_short_circuit && now_s()-tm < template_budget) {
-      double tb=now_s();
       /* the whole batch is always hashed -- no early-out on a found block --
          so the hashrate reflects real compute. On a low-difficulty testnet a
          block is found almost every batch; early-out would make the rate
@@ -540,8 +606,11 @@ static void *worker(void *arg) {
         }
         if(n==BATCH-1) for(int i=0;i<32;i++) sprintf(lh+i*2,"%02x",mh[i]);
       });
-      double dt=now_s()-tb; if(dt<=0) dt=1e-6;
-      double inst=BATCH/dt; hr=(hr<=0)?inst:0.7*hr+0.3*inst;
+      double now = now_s();
+      double interval = now - prev_end; if (interval < 1e-6) interval = 1e-6;
+      double inst = BATCH / interval;
+      hr = (hr <= 0) ? inst : 0.7*hr + 0.3*inst;
+      prev_end = now;
       total+=BATCH; base+=BATCH; best=bbest;
       worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
 
@@ -550,7 +619,12 @@ static void *worker(void *arg) {
        * the first one (it's a full block), and then we move on. */
       if (n_winners > 0) {
         if (pool_mode_now) {
-          /* Snapshot under the lock then submit outside. */
+          /* v1.1.10: fire-and-forget. We snapshot the winners under the
+           * lock, then enqueue every one to the serial submit queue and
+           * IMMEDIATELY continue mining. Previously this loop blocked on
+           * the HTTP roundtrip per share, eating 40-80% of wall-clock
+           * time. The async submitter increments g_stats.blocks_found
+           * itself if the pool says we landed a full block. */
           uint32_t to_submit[WIN_MAX]; int nw;
           pthread_mutex_lock(&g_lock);
           nw = n_winners;
@@ -564,11 +638,10 @@ static void *worker(void *arg) {
             blob[noff+2]=(u8)(w>>16); blob[noff+3]=(u8)(w>>24);
             u8 mh[32]; lattice_hash_ds(blob, hb_len, ds, mh);
             int is_full = (net_diff > 0 && meets_target(mh, net_diff)) ? 1 : 0;
-            NSDictionary *sr = pool_submit_share(job_id, mine_to, w, is_full);
-            if (sr && [sr[@"block"] boolValue]) blocks++;
-            if (!g_running) break;
+            submit_share_async(job_id, mine_to, w, is_full);
           }
-          worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
+          /* Cheap publish; blocks_found is owned by submit_share_async. */
+          worker_set(1,hr,total,height,diff,0,best,now_s()-t0,lh);
         } else {
           /* Solo: take the first winner (any one solves the block). */
           uint32_t w = winners[0];
@@ -578,11 +651,15 @@ static void *worker(void *arg) {
             bb[noff]=(u8)w; bb[noff+1]=(u8)(w>>8);
             bb[noff+2]=(u8)(w>>16); bb[noff+3]=(u8)(w>>24);
             NSDictionary *sr=json_rpc(@"submit_block",@[data2hex(block)]);
-            if(sr && [sr[@"status"] isEqualToString:@"OK"]) blocks++;
+            if(sr && [sr[@"status"] isEqualToString:@"OK"]) {
+              pthread_mutex_lock(&g_lock);
+              g_stats.blocks_found++;
+              pthread_mutex_unlock(&g_lock);
+            }
           }
           n_winners = 0;
           solo_short_circuit = 1;   /* fetch a fresh template */
-          worker_set(1,hr,total,height,diff,blocks,best,now_s()-t0,lh);
+          worker_set(1,hr,total,height,diff,0,best,now_s()-t0,lh);
         }
       }
     }
@@ -594,7 +671,22 @@ static void *worker(void *arg) {
 void miner_start(void) {
   if(g_running) return;
   pthread_mutex_lock(&g_lock);
-  memset(&g_stats,0,sizeof g_stats); g_lasthash[0]=0;
+  /* v1.1.10: reset MINING counters only -- earlier versions zeroed the
+   * entire g_stats struct, which also wiped balance / unlocked_balance /
+   * wallet_height / target_height / wallet_connected / wallet_syncing.
+   * The next blocking wallet_poll() refresh could take minutes to
+   * republish those fields, so the UI flashed "balance 0" for the
+   * duration. Leave wallet state alone -- wallet_poll owns it. */
+  g_stats.daemon_connected = 0;
+  g_stats.hashrate         = 0;
+  g_stats.total_hashes     = 0;
+  g_stats.height           = 0;
+  g_stats.difficulty       = 0;
+  g_stats.blocks_found     = 0;
+  g_stats.best_bits        = 0;
+  g_stats.uptime_s         = 0;
+  g_stats.no_address       = 0;
+  g_lasthash[0]            = 0;
   pthread_mutex_unlock(&g_lock);
   /* Tell macOS this is real work: opt out of App Nap (which throttles the
      CPU when the window is unfocused) and keep the system from idle-sleeping
@@ -704,7 +796,7 @@ int miner_generate_address(char *addr_out, int addr_cap, char *seed_out, int see
   return 1;
 }
 
-/* send `amount` RME to `address` from the embedded wallet. Blocking. */
+/* send `amount` GLAC to `address` from the embedded wallet. Blocking. */
 const char *miner_send(const char *address, double amount) {
   static char result[256];
   RimeWallet *w;

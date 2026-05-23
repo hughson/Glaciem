@@ -127,6 +127,22 @@ footer{border-top:1px solid var(--line);padding:22px 0;text-align:center;color:v
     </div>
   </section>
 
+  <section id="maturity-section" style="display:none;">
+    <h2>PAYOUT MATURITY</h2>
+    <div class="warning" id="maturity-card">
+      <div id="mat-summary">loading…</div>
+      <div id="mat-next" style="margin-top:8px;"></div>
+      <div class="dim small" style="margin-top:8px;">
+        Block rewards are locked for 60 confirmations before the pool
+        can spend them — same rule as Monero. Each pool-found block matures
+        about two hours after it's mined. Payouts only fire from
+        <em>unlocked</em> balance, so a pending credit means your share is
+        sitting in a maturing coinbase output and will be paid as soon as it
+        unlocks.
+      </div>
+    </div>
+  </section>
+
   <section>
     <h2>HOW TO CONNECT</h2>
     <div class="connect-card">
@@ -228,6 +244,43 @@ async function fetchStats() {
       ? "<strong>Cold sweep: ON.</strong> The pool's hot wallet auto-transfers accumulated balance to an offline cold wallet on a timer. If this VM is compromised, an attacker only gets ~one sweep window's worth of rewards."
       : "<strong>Cold sweep: OFF.</strong> Block rewards accumulate on the pool VM indefinitely. Operator should configure a COLD_ADDRESS before significant balance builds up.";
     $("sec-bans").innerHTML = `<span class="dim">Banned wallets today: <span class="mono accent">${d.banned_wallets_today ?? 0}</span> (auto-banned after 10 invalid shares).</span>`;
+
+    // ---- payout maturity ----
+    // Backend exposes d.maturity once the wallet polls have completed.
+    // While the value is missing, the section stays hidden (no chrome,
+    // no jitter). Once present we show the locked/unlocked split and
+    // the countdown until the next coinbase output unlocks.
+    const m = d.maturity;
+    const sect = $("maturity-section");
+    if (!m || m.balance_atomic == null) {
+      sect.style.display = "none";
+    } else {
+      sect.style.display = "";
+      const unlocked = fmtGlac(m.unlocked_atomic || 0);
+      const locked   = fmtGlac(m.locked_atomic   || 0);
+      const outs     = m.unspent_outputs ?? 0;
+      if ((m.locked_atomic || 0) <= 0) {
+        $("mat-summary").innerHTML =
+          `<strong>All rewards mature.</strong> Unlocked: <span class="mono accent">${unlocked}</span>. ` +
+          `Payouts fire automatically when a wallet's pending credit clears the minimum.`;
+        $("mat-next").innerHTML = "";
+      } else {
+        $("mat-summary").innerHTML =
+          `<strong>Unlocked:</strong> <span class="mono accent">${unlocked}</span>` +
+          `&nbsp;&nbsp;<strong>Maturing:</strong> <span class="mono">${locked}</span>` +
+          ` <span class="dim">across ${outs} coinbase output${outs === 1 ? "" : "s"}</span>`;
+        const secs   = m.seconds_to_next_unlock ?? 0;
+        const blocks = m.blocks_to_next_unlock  ?? 0;
+        const eta    = secs >= 3600
+          ? `~${Math.round(secs/3600)} h`
+          : secs >= 60
+            ? `~${Math.round(secs/60)} min`
+            : `~${secs}s`;
+        $("mat-next").innerHTML =
+          `<strong>Next unlock in ${eta}</strong> ` +
+          `<span class="dim">(${blocks} confirmation${blocks === 1 ? "" : "s"} remaining).</span>`;
+      }
+    }
   } catch (e) {
     console.warn("stats fetch failed:", e);
   }

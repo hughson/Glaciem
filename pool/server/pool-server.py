@@ -93,6 +93,15 @@ PAYOUT_PRIORITY       = int(os.environ.get("PAYOUT_PRIORITY", "0"))
 
 MAX_RECENT_JOBS = 8
 
+# Sliding-window length for hashrate estimation, in seconds. Each share at
+# difficulty D represents D expected hashes; pool hashrate is
+# sum(D in window) / window. Replaced the v1.1.9 EWMA-on-D/dt estimator,
+# which underreported by ~25% because share inter-arrival times are
+# exponentially distributed and the harmonic-mean nature of D/dt biased
+# the average low once the short-dt clamp kicked in. 300 s is the
+# industry-standard window for pool-side hashrate displays.
+HASHRATE_WINDOW_S = int(os.environ.get("HASHRATE_WINDOW_S", "300"))
+
 # ---- v1.1 hardening -----------------------------------------------------
 #
 # Share verification via the Lattice PoW shared library, cold-sweep of the
@@ -117,6 +126,15 @@ COLD_ADDRESS          = os.environ.get("COLD_ADDRESS", "").strip()
 COLD_HOT_BUFFER_ATOMIC = int(os.environ.get("COLD_HOT_BUFFER_ATOMIC",
                                             str(50 * 10**12)))  # 50 GLAC
 COLD_SWEEP_INTERVAL_S  = int(os.environ.get("COLD_SWEEP_INTERVAL_S", "3600"))  # 1h
+
+# Maturity tracker. Coinbase outputs on Monero-derived chains (Rime
+# included) are locked for 60 confirmations. We poll the wallet's
+# balance + blocks_to_unlock periodically so the stats page can show
+# users when their next payout chunk unlocks instead of leaving them
+# wondering why "pending X GLAC" doesn't translate to a transfer.
+MATURITY_REFRESH_S     = int(os.environ.get("MATURITY_REFRESH_S", "30"))
+# Rime block target (matches src/cryptonote_config.h DIFFICULTY_TARGET_V2).
+BLOCK_TIME_S           = int(os.environ.get("BLOCK_TIME_S", "120"))
 
 # Wallet address validator. Rime mainnet addresses use the Monero scheme
 # adapted to R-prefix: 95 chars, base58 alphabet, leading 'R'. Integrated
@@ -229,7 +247,7 @@ current_job = None
 # OrderedDict: job_id -> { template metadata + submissions set }
 recent_jobs = collections.OrderedDict()
 
-# wallet -> dict of share counters + EWMA hashrate
+# wallet -> dict of share counters + sliding-window share history
 miner_stats = {}
 
 # Pool-wide rolling counters.
@@ -242,6 +260,18 @@ pool_stats = {
     "current_round_shares": 0,
     "started_at": time.time(),
     "day_anchor": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+    # v1.1.10: track WHY shares get rejected. Anything non-zero here is
+    # an effective hashrate leak between miners and the pool counter, so
+    # the page (and operator) can see what's bleeding.
+    "submits_total":   0,
+    "rejects_by_reason": {
+        "rate_limit":    0,
+        "stale_job":     0,
+        "duplicate":     0,
+        "invalid_share": 0,
+        "bad_request":   0,
+        "banned":        0,
+    },
 }
 
 
@@ -320,25 +350,42 @@ def refresh_job():
         print(f"[pool] refresh_job failed: {e}", file=sys.stderr)
 
 
+def _new_miner_stats():
+    return {
+        "shares_total": 0, "shares_today": 0, "shares_this_round": 0,
+        "last_share_ts": 0.0, "blocks_found": 0,
+        # Deque of (ts, share_difficulty) for the sliding-window hashrate.
+        # Trimmed lazily in _compute_hashrate().
+        "share_hist": collections.deque(),
+    }
+
+
+def _compute_hashrate(s, now):
+    """Unbiased pool hashrate: sum of share difficulties in the last
+    HASHRATE_WINDOW_S seconds, divided by the window length. Each share
+    at difficulty D represents D expected hashes."""
+    cutoff = now - HASHRATE_WINDOW_S
+    hist = s["share_hist"]
+    while hist and hist[0][0] < cutoff:
+        hist.popleft()
+    if not hist:
+        return 0.0
+    return sum(d for _, d in hist) / HASHRATE_WINDOW_S
+
+
 def credit_share(wallet):
     """Record a share for the submitting wallet. Updates rolling stats."""
     rollover_if_needed()
     s = miner_stats.get(wallet)
     if s is None:
-        s = {
-            "shares_total": 0, "shares_today": 0, "shares_this_round": 0,
-            "last_share_ts": 0.0, "hashrate_ewma": 0.0, "blocks_found": 0,
-        }
+        s = _new_miner_stats()
         miner_stats[wallet] = s
     now = time.time()
     s["shares_total"]     += 1
     s["shares_today"]     += 1
     s["shares_this_round"] += 1
-    if s["last_share_ts"] > 0 and current_job is not None:
-        dt = max(0.5, now - s["last_share_ts"])
-        inst = current_job["share_difficulty"] / dt
-        s["hashrate_ewma"] = (0.7 * s["hashrate_ewma"] + 0.3 * inst
-                              if s["hashrate_ewma"] > 0 else inst)
+    if current_job is not None:
+        s["share_hist"].append((now, current_job["share_difficulty"]))
     s["last_share_ts"] = now
     pool_stats["shares_total"]         += 1
     pool_stats["shares_today"]         += 1
@@ -569,10 +616,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             if job is None:
                 return self._send_json(503, {"error": "pool warming up; retry in a moment"})
             if wallet not in miner_stats:
-                miner_stats[wallet] = {
-                    "shares_total": 0, "shares_today": 0, "shares_this_round": 0,
-                    "last_share_ts": 0.0, "hashrate_ewma": 0.0, "blocks_found": 0,
-                }
+                miner_stats[wallet] = _new_miner_stats()
             payload = {
                 "job_id":             job["job_id"],
                 "blockhashing_blob":  job["blockhashing_blob"],
@@ -586,13 +630,21 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         self._send_json(200, payload)
 
     def _handle_submit(self):
+        # v1.1.10: count every submit attempt so the page can compute a
+        # straight accept-rate and surface the breakdown of WHY rejected.
+        with STATE_LOCK:
+            pool_stats["submits_total"] += 1
         body = self._read_json()
         job_id = body.get("job_id")
         wallet = body.get("wallet")
         nonce  = body.get("nonce")
         if not job_id or not isinstance(nonce, int):
+            with STATE_LOCK:
+                pool_stats["rejects_by_reason"]["bad_request"] += 1
             return self._send_json(400, {"error": "job_id and nonce required"})
         if not is_valid_wallet(wallet):
+            with STATE_LOCK:
+                pool_stats["rejects_by_reason"]["bad_request"] += 1
             return self._send_json(400, {"error": "invalid wallet address"})
         nonce &= 0xFFFFFFFF
 
@@ -600,18 +652,24 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         now = time.time()
         with _hard_lock:
             if wallet in _wallet_bans:
+                with STATE_LOCK:
+                    pool_stats["rejects_by_reason"]["banned"] += 1
                 return self._send_json(403, {"error": "wallet banned for repeated invalid shares"})
             last = _wallet_last_acc.get(wallet, 0.0)
             min_gap = 1.0 / MAX_SHARES_PER_SEC
             if now - last < min_gap:
+                with STATE_LOCK:
+                    pool_stats["rejects_by_reason"]["rate_limit"] += 1
                 return self._send_json(429, {"accepted": False, "reason": "rate limit"})
 
         with STATE_LOCK:
             job = recent_jobs.get(job_id)
             if job is None:
+                pool_stats["rejects_by_reason"]["stale_job"] += 1
                 return self._send_json(200, {"accepted": False, "reason": "stale job"})
             dedupe_key = f"{wallet}:{nonce}"
             if dedupe_key in job["submissions"]:
+                pool_stats["rejects_by_reason"]["duplicate"] += 1
                 return self._send_json(200, {"accepted": False, "reason": "duplicate"})
             # Snapshot the job under the lock so verify_share_against_job
             # can run without holding STATE_LOCK (the hash is microseconds
@@ -633,6 +691,8 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                     _wallet_bans.add(wallet)
                     print(f"[pool] BANNED {wallet[:12]}... after {bad} invalid shares",
                           file=sys.stderr)
+            with STATE_LOCK:
+                pool_stats["rejects_by_reason"]["invalid_share"] += 1
             return self._send_json(200, {"accepted": False, "reason": "invalid share"})
 
         # Valid share -- mark the dedupe key, credit, update rate-limit timestamp.
@@ -653,7 +713,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             now = time.time()
             active = sum(1 for s in miner_stats.values()
                          if s["last_share_ts"] > now - 5 * 60)
-            hashrate = sum(s["hashrate_ewma"] for s in miner_stats.values())
+            hashrate = sum(_compute_hashrate(s, now) for s in miner_stats.values())
             payload = {
                 "pool_wallet":          POOL_WALLET,
                 "pool_fee_percent":     POOL_FEE_PERCENT,
@@ -680,6 +740,17 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                     "share_difficulty":   current_job["share_difficulty"],
                     "age_s":              int(now - current_job["created_at"]),
                 } if current_job else None),
+                # Coinbase-maturity countdown so the stats page can
+                # answer the obvious question: "I'm owed X GLAC -- when
+                # is it actually going to arrive?"
+                "maturity":             maturity_snapshot(),
+                # v1.1.10: every submit attempt and every per-reason
+                # rejection. Lets the operator (and the page) see if the
+                # accepted-share-derived hashrate is being depressed by
+                # something fixable (rate-limit too tight, jobs evicted
+                # too early, etc.) vs the miner just running that fast.
+                "submits_total":        pool_stats["submits_total"],
+                "rejects_by_reason":    dict(pool_stats["rejects_by_reason"]),
             }
         self._send_json(200, payload)
 
@@ -692,7 +763,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             payload = {
                 "wallet":            wallet,
                 "found":             True,
-                "hashrate":          int(round(s["hashrate_ewma"])),
+                "hashrate":          int(round(_compute_hashrate(s, now))),
                 "shares_total":      s["shares_total"],
                 "shares_today":      s["shares_today"],
                 "shares_this_round": s["shares_this_round"],
@@ -942,6 +1013,83 @@ def cold_sweep_loop():
             print(f"[pool] cold_sweep_loop error: {e}", file=sys.stderr)
 
 
+# ---- coinbase-maturity tracker ----------------------------------------
+#
+# The wallet RPC exposes:
+#   balance:           sum of every output we control (locked + unlocked)
+#   unlocked_balance:  outputs available to spend right now
+#   blocks_to_unlock:  chain confirmations the OLDEST locked output still
+#                      needs before it joins unlocked_balance
+#
+# Coinbase outputs are locked for 60 confirmations on a Monero-derived
+# chain. When a pool block lands, the reward shows up in `balance`
+# immediately but cannot be paid out until it matures. Without exposing
+# this, users see "pending 175 GLAC" and conclude the pool is broken.
+# We poll the wallet every MATURITY_REFRESH_S and cache the answer.
+
+_maturity_cache = {
+    "ts":                       0.0,   # when we last refreshed
+    "balance_atomic":           None,  # int or None if never fetched
+    "unlocked_atomic":          None,
+    "locked_atomic":            None,
+    "blocks_to_next_unlock":    None,  # int or None
+    "seconds_to_next_unlock":   None,
+    "unspent_outputs":          None,  # int or None
+}
+_maturity_lock = threading.Lock()
+
+
+def maturity_refresh_once():
+    try:
+        bal = wallet_rpc("get_balance", timeout=8)
+    except Exception as e:
+        print(f"[pool] maturity refresh failed: {e}", file=sys.stderr)
+        return
+    try:
+        balance     = int(bal.get("balance", 0))
+        unlocked    = int(bal.get("unlocked_balance", 0))
+        locked      = max(0, balance - unlocked)
+        # blocks_to_unlock is 0 when nothing is locked, so guard against it.
+        btu         = int(bal.get("blocks_to_unlock", 0)) if locked > 0 else 0
+        outputs     = 0
+        for sub in bal.get("per_subaddress", []) or []:
+            outputs += int(sub.get("num_unspent_outputs", 0))
+        with _maturity_lock:
+            _maturity_cache["ts"]                     = time.time()
+            _maturity_cache["balance_atomic"]         = balance
+            _maturity_cache["unlocked_atomic"]        = unlocked
+            _maturity_cache["locked_atomic"]          = locked
+            _maturity_cache["blocks_to_next_unlock"]  = btu
+            _maturity_cache["seconds_to_next_unlock"] = btu * BLOCK_TIME_S
+            _maturity_cache["unspent_outputs"]        = outputs
+    except Exception as e:
+        print(f"[pool] maturity refresh parse failed: {e}", file=sys.stderr)
+
+
+def maturity_loop():
+    # First refresh runs immediately so /pool/stats has data without
+    # waiting MATURITY_REFRESH_S.
+    while True:
+        try:
+            maturity_refresh_once()
+        except Exception as e:
+            print(f"[pool] maturity_loop error: {e}", file=sys.stderr)
+        time.sleep(MATURITY_REFRESH_S)
+
+
+def maturity_snapshot():
+    """Return a copy of the maturity cache, plus a `refreshed_s_ago`
+    derived field. Returns None if we have never gotten a successful
+    poll back from the wallet (caller should hide the maturity UI)."""
+    with _maturity_lock:
+        if _maturity_cache["ts"] <= 0:
+            return None
+        snap = dict(_maturity_cache)
+    snap["refreshed_s_ago"] = int(time.time() - snap["ts"])
+    snap.pop("ts", None)
+    return snap
+
+
 # ---- entry point ---------------------------------------------------------
 
 def main():
@@ -962,6 +1110,9 @@ def main():
 
     sweeper = threading.Thread(target=cold_sweep_loop, name="cold-sweep", daemon=True)
     sweeper.start()
+
+    maturity = threading.Thread(target=maturity_loop, name="maturity", daemon=True)
+    maturity.start()
 
     server = ThreadedHTTPServer(("0.0.0.0", POOL_PORT), PoolHandler)
     print(f"[pool] listening on 0.0.0.0:{POOL_PORT}")

@@ -282,6 +282,14 @@ void WorkerThread::run() {
     double hr = 0;
     uint64_t total = 0, blocks = 0;
     int best = 0;
+    // v1.1.10: nonce base is initialized ONCE and advances by cores*CHUNK
+    // per batch. Previously it was re-seeded as `nowSec() * 131` on every
+    // outer iteration; the pool re-issues the same job_id whenever the
+    // upstream template hasn't refreshed, so consecutive batches with the
+    // same job_id walked overlapping nonce ranges and the pool dedupe set
+    // dropped 20%+ of submissions as duplicates -- showing up as a real
+    // pool/miner hashrate gap. Monotonic base avoids that entirely.
+    uint32_t base = (uint32_t)(nowSec() * 131.0);
 
     while (!m_stop) {
         // Mine to the embedded wallet's address; refuse to mine without one.
@@ -357,7 +365,9 @@ void WorkerThread::run() {
         // often produce 2-3 shares per batch at pool share-difficulty;
         // submitting all of them closes most of the miner/pool hashrate
         // gap and means more shares = more proportional payout.
-        uint32_t base = (uint32_t)(nowSec() * 131.0);
+        // v1.1.10: `base` is now hoisted (see top of run()) so it
+        // advances monotonically across iterations and never re-uses
+        // a nonce range against the same job.
         constexpr int WIN_MAX = 32;
         uint32_t winners[WIN_MAX] = {0};
         std::atomic<int> n_winners{0};
@@ -402,6 +412,7 @@ void WorkerThread::run() {
         for (auto &th : workers) th.join();
 
         int batch = cores * CHUNK;
+        base += (uint32_t)batch;   // v1.1.10: advance for the next iteration
         double dt = nowSec() - tb_start;
         if (dt <= 0) dt = 1e-6;
         double inst = batch / dt;
