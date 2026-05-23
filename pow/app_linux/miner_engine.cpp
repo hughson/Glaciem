@@ -291,7 +291,22 @@ void WorkerThread::run() {
     // pool/miner hashrate gap. Monotonic base avoids that entirely.
     uint32_t base = (uint32_t)(nowSec() * 131.0);
 
+    // v1.1.10: defensive refresh on consecutive invalid-share
+    // rejections. The pool will ban a wallet after 25 in a row;
+    // detecting it at 3 and forcing a dataset+template rebuild
+    // self-corrects whatever drift (usually a missed epoch transition)
+    // caused the mismatch.
+    int consecutiveInvalid = 0;
+    constexpr int LINUX_CONSECUTIVE_INVALID_THRESHOLD = 3;
+
     while (!m_stop) {
+        if (consecutiveInvalid >= LINUX_CONSECUTIVE_INVALID_THRESHOLD) {
+            // Drop cached dataset so the next iteration rebuilds it
+            // against whatever seed_hash the fresh job carries.
+            haveDataset = false;
+            std::memset(curSeed, 0, sizeof(curSeed));
+            consecutiveInvalid = 0;
+        }
         // Mine to the embedded wallet's address; refuse to mine without one.
         QString addr;
         {
@@ -453,10 +468,21 @@ void WorkerThread::run() {
                     bool isFull = (netDiff > 0) && meetsTarget(mh, netDiff);
                     auto sr = poolSubmitShare(poolUrlNow, jobId, addr,
                                               (quint32)win, isFull);
-                    if (sr.value("block").toBool()) {
+                    bool isBlock    = sr.value("block").toBool();
+                    bool isAccepted = sr.value("accepted").toBool();
+                    QString reason  = sr.value("reason").toString();
+                    if (isBlock) {
                         blocks++;
                         QMutexLocker lk(&m_e->m_lock);
                         m_e->m_blocksFound = blocks;
+                    }
+                    // v1.1.10: self-heal counter -- accepted clears it,
+                    // "invalid share" rejections accumulate toward the
+                    // force-refresh threshold at the top of the loop.
+                    if (isAccepted || isBlock) {
+                        consecutiveInvalid = 0;
+                    } else if (reason == QStringLiteral("invalid share")) {
+                        consecutiveInvalid++;
                     }
                 }
             } else {

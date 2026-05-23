@@ -559,8 +559,26 @@ static unsigned __stdcall mine_thread(void *arg) {
   u8 cur_seed[32]; int have_seed = 0;
   uint32_t base = (uint32_t)(now_s()*131.0);
   char resp[16384];
+  /* v1.1.10: track consecutive "invalid share" rejections so we self-
+   * heal a stale dataset / epoch-transition glitch before the pool's
+   * ban threshold trips. After 3 in a row we drop the cached dataset
+   * (have_seed = 0) and re-fetch the job. */
+  int consecutive_invalid = 0;
+  #define WIN_CONSECUTIVE_INVALID_THRESHOLD 3
 
   while (g_sh.running) {
+    /* v1.1.10: defensive refresh. After WIN_CONSECUTIVE_INVALID_THRESHOLD
+     * back-to-back "invalid share" rejections, assume the cached
+     * dataset is out of sync with the pool's view of the epoch.
+     * Drop the dataset cache so the next iteration rebuilds it from
+     * whatever seed_hash the freshly-fetched job carries. */
+    if (consecutive_invalid >= WIN_CONSECUTIVE_INVALID_THRESHOLD) {
+      have_seed = 0;
+      memset(cur_seed, 0, sizeof cur_seed);
+      consecutive_invalid = 0;
+      sh_status("Refreshing template after rejections...");
+    }
+
     /* mine to the embedded wallet's address. No fallback -- with no wallet
        generated yet, the miner refuses to mine. */
     char waddr[160];
@@ -696,7 +714,15 @@ static unsigned __stdcall mine_thread(void *arg) {
           char sr[2048];
           if (pool_submit_share(job_id, waddr, winner_nonce, is_full, sr, sizeof sr)) {
             int got_block = strstr(sr, "\"block\":true") != NULL;
+            int got_accepted = strstr(sr, "\"accepted\":true") != NULL;
+            int got_invalid = (strstr(sr, "\"reason\":\"invalid share\"") != NULL);
             if (got_block) blocks++;
+            /* v1.1.10: update the self-heal counter based on pool response. */
+            if (got_accepted || got_block) {
+              consecutive_invalid = 0;
+            } else if (got_invalid) {
+              consecutive_invalid++;
+            }
           }
         }
       } else {

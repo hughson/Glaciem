@@ -102,3 +102,30 @@ int pool_verify_share(const uint8_t *blob, int blob_len, int nonce_offset,
     lattice_hash_ds(buf, blob_len, ds, hash);
     return meets_target(hash, difficulty);
 }
+
+/* Like pool_verify_share, but also writes the resulting 32-byte hash to
+ * `out_hash` so the caller can log it on failure for diagnostics.
+ * v1.1.10: lets the pool log "share didn't meet target -- here's the
+ * hash that came out, and the target it was checked against" so an
+ * operator can tell the difference between (a) honest miner producing
+ * the wrong hash from a stale dataset (hash is "real-looking" garbage
+ * with no leading zeros), (b) actual cheating (hash is random / way
+ * above target), or (c) a meets_target / endian / blob-mangling bug
+ * (hash is suspiciously close to target). */
+int pool_verify_share_v2(const uint8_t *blob, int blob_len, int nonce_offset,
+                         uint32_t nonce, const uint64_t *ds, uint64_t difficulty,
+                         uint8_t out_hash[32]) {
+    if (!blob || !ds || !out_hash) return -1;
+    if (blob_len <= 0 || blob_len > 256) return -1;
+    if (nonce_offset < 0 || nonce_offset + 4 > blob_len) return -1;
+
+    uint8_t buf[256];
+    memcpy(buf, blob, blob_len);
+    buf[nonce_offset]     = (uint8_t)(nonce);
+    buf[nonce_offset + 1] = (uint8_t)(nonce >> 8);
+    buf[nonce_offset + 2] = (uint8_t)(nonce >> 16);
+    buf[nonce_offset + 3] = (uint8_t)(nonce >> 24);
+
+    lattice_hash_ds(buf, blob_len, ds, out_hash);
+    return meets_target(out_hash, difficulty);
+}

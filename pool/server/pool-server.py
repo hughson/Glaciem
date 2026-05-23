@@ -111,8 +111,12 @@ HASHRATE_WINDOW_S = int(os.environ.get("HASHRATE_WINDOW_S", "300"))
 VERIFY_LIB_PATH       = os.environ.get(
     "VERIFY_LIB_PATH", "/root/libpool_verify.so")
 # After N invalid shares from the same wallet, drop further submissions.
-# Honest miners hit 0 invalid shares; cheaters hit this fast.
-INVALID_SHARE_BAN_AT  = int(os.environ.get("INVALID_SHARE_BAN_AT", "10"))
+# Honest miners hit 0 invalid shares; cheaters hit this fast. v1.1.10:
+# raised from 10 to 25 -- a real epoch-transition bug locked an honest
+# miner out at the lower threshold. We also log a WARNING at 10 so an
+# operator sees the wallet is in trouble before it gets banned.
+INVALID_SHARE_BAN_AT  = int(os.environ.get("INVALID_SHARE_BAN_AT", "25"))
+INVALID_SHARE_WARN_AT = int(os.environ.get("INVALID_SHARE_WARN_AT", "10"))
 # How many shares per wallet per second we'll accept (rate-limit spam).
 # At share_diff = network/1000 a single fast CPU does maybe 5-10 shares/s;
 # 60/s gives ridiculous headroom while still capping abuse.
@@ -159,10 +163,24 @@ try:
         ctypes.c_char_p, ctypes.c_int, ctypes.c_int,
         ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint64,
     ]
+    # v1.1.10: enriched variant that also returns the 32-byte hash so we
+    # can log it on rejection. Symbol may be missing if libpool_verify.so
+    # hasn't been rebuilt yet -- fall back to plain pool_verify_share.
+    try:
+        _lattice.pool_verify_share_v2.restype   = ctypes.c_int
+        _lattice.pool_verify_share_v2.argtypes  = [
+            ctypes.c_char_p, ctypes.c_int, ctypes.c_int,
+            ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint64,
+            ctypes.c_char_p,
+        ]
+        _lattice_has_v2 = True
+    except AttributeError:
+        _lattice_has_v2 = False
 except OSError as e:
     print(f"[pool] WARNING: could not load {VERIFY_LIB_PATH}: {e}. "
           "Falling back to v1 TRUST MODE.", file=sys.stderr)
     _lattice = None
+    _lattice_has_v2 = False
 
 # Dataset cache: seed_hash hex -> opaque pointer from pool_build_dataset().
 # Bounded -- LRU-evict oldest when we exceed MAX_CACHED_DATASETS.
@@ -208,25 +226,47 @@ def find_nonce_offset_buf(buf):
 
 
 def verify_share_against_job(job, nonce):
-    """Run the actual Lattice PoW check. Returns True/False. If the
-    verifier lib isn't loaded, returns True (v1 trust-mode fallback --
-    we'd rather accept than reject when crippled)."""
+    """Run the actual Lattice PoW check. Returns (ok, info_dict) where
+    info_dict captures details useful for logging on failure. If the
+    verifier lib isn't loaded, returns (True, {}) -- trust-mode fallback;
+    we'd rather accept than reject when crippled.
+
+    v1.1.10: uses pool_verify_share_v2 when available so we can log the
+    actual hash on rejection for diagnostics. Falls back to the old
+    boolean-only call if the lib is from before v1.1.10."""
     if _lattice is None:
-        return True
-    ds = get_dataset_for(job.get("seed_hash", ""))
+        return True, {}
+    seed_hex = job.get("seed_hash", "")
+    ds = get_dataset_for(seed_hex)
     if ds is None:
         # No dataset available -- accept (better than locking miners out).
-        return True
+        return True, {"reason": "no_dataset"}
     blob_hex = job["blockhashing_blob"]
     try:
         blob = bytes.fromhex(blob_hex)
     except ValueError:
-        return False
+        return False, {"reason": "bad_blob_hex"}
     off = find_nonce_offset_buf(blob)
-    res = _lattice.pool_verify_share(
-        blob, len(blob), off, nonce & 0xFFFFFFFF,
-        ctypes.c_void_p(ds), job["share_difficulty"])
-    return res == 1
+    if _lattice_has_v2:
+        out_hash = ctypes.create_string_buffer(32)
+        res = _lattice.pool_verify_share_v2(
+            blob, len(blob), off, nonce & 0xFFFFFFFF,
+            ctypes.c_void_p(ds), job["share_difficulty"], out_hash)
+        info = {
+            "seed_hash":   seed_hex[:16] + "...",
+            "share_diff":  job["share_difficulty"],
+            "nonce":       nonce & 0xFFFFFFFF,
+            "blob_off":    off,
+            "blob_len":    len(blob),
+            "hash":        out_hash.raw.hex(),
+            "hash_top64":  int.from_bytes(out_hash.raw[24:32], "little"),
+        }
+    else:
+        res = _lattice.pool_verify_share(
+            blob, len(blob), off, nonce & 0xFFFFFFFF,
+            ctypes.c_void_p(ds), job["share_difficulty"])
+        info = {"seed_hash": seed_hex[:16] + "...", "v2": False}
+    return (res == 1), info
 
 
 # Per-wallet hardening state.
@@ -682,25 +722,50 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
             full_block = bool(body.get("full_block"))
 
         # v1.1 hardening: Lattice-verify the share before crediting.
-        valid = verify_share_against_job(job_snap, nonce)
+        valid, vinfo = verify_share_against_job(job_snap, nonce)
         if not valid:
             with _hard_lock:
                 _wallet_bad_count[wallet] += 1
                 bad = _wallet_bad_count[wallet]
+                if bad == INVALID_SHARE_WARN_AT:
+                    # Early-warning log so the operator sees a wallet in
+                    # trouble *before* it gets banned. Real cheaters will
+                    # blow past this; an honest miner with a temporary
+                    # bug (stale dataset, epoch transition, etc.) often
+                    # gets here briefly and then self-corrects.
+                    print(f"[pool] WARN {wallet[:12]}... has {bad} invalid shares "
+                          f"(ban threshold {INVALID_SHARE_BAN_AT}). "
+                          f"sample info={vinfo}",
+                          file=sys.stderr)
                 if bad >= INVALID_SHARE_BAN_AT:
                     _wallet_bans.add(wallet)
-                    print(f"[pool] BANNED {wallet[:12]}... after {bad} invalid shares",
+                    print(f"[pool] BANNED {wallet[:12]}... after {bad} invalid shares. "
+                          f"last info={vinfo}",
                           file=sys.stderr)
             with STATE_LOCK:
                 pool_stats["rejects_by_reason"]["invalid_share"] += 1
+            # v1.1.10: log every individual invalid share with details so
+            # we can diagnose the root cause when it happens again.
+            # Top-64 bits of the hash * difficulty should be 0 for a
+            # valid share; logging the actual top64 lets us see how far
+            # off the rejected hash was -- close-to-target = real share
+            # against the wrong dataset; uniformly random = cheating or
+            # blob mangling.
+            print(f"[pool] invalid share from {wallet[:12]}... bad_count={bad}/{INVALID_SHARE_BAN_AT} "
+                  f"info={vinfo}",
+                  file=sys.stderr)
             return self._send_json(200, {"accepted": False, "reason": "invalid share"})
 
         # Valid share -- mark the dedupe key, credit, update rate-limit timestamp.
+        # Reset bad-count on success so an old transient blip doesn't
+        # haunt a wallet forever.
         with STATE_LOCK:
             job["submissions"].add(dedupe_key)
             credit_share(wallet)
         with _hard_lock:
             _wallet_last_acc[wallet] = now
+            if _wallet_bad_count.get(wallet, 0) > 0:
+                _wallet_bad_count[wallet] = 0
 
         if full_block:
             r = submit_block(job, nonce, wallet)
@@ -894,11 +959,55 @@ def compute_pending_balances():
 
 def payout_round():
     """One pass through pending credits. Sends any wallet that's over the
-    payout threshold. Returns the number of successful transfers."""
+    payout threshold. Returns the number of successful transfers.
+
+    v1.1.10: caps the round at the wallet's CURRENT unlocked balance.
+    Block rewards inherit Monero's 60-confirmation coinbase lock, so on
+    a young pool the wallet's `balance` is much bigger than its
+    `unlocked_balance`. Naively trying to ship the full pending amount
+    just bounces off wallet-rpc as "not enough money" until everything
+    matures -- meanwhile users see "pending X GLAC" with no payouts
+    landing. Instead we pro-rata each miner across whatever's spendable
+    right now and ship that, then catch up in subsequent rounds as more
+    outputs unlock."""
     pending = compute_pending_balances()
     eligible = [(w, a) for w, a in pending.items() if a >= MIN_PAYOUT_ATOMIC]
     if not eligible:
         return 0
+
+    # Fetch the live unlocked balance so we know what we can actually
+    # spend in this round. The maturity tracker has a cached snapshot
+    # but the cache is up to MATURITY_REFRESH_S seconds stale, which is
+    # too risky for an actual transfer -- ask the wallet directly.
+    try:
+        bal = wallet_rpc("get_balance", timeout=8)
+    except Exception as e:
+        print(f"[pool] payout: get_balance failed: {e}", file=sys.stderr)
+        return 0
+    unlocked = int(bal.get("unlocked_balance", 0))
+    # Leave a small fee reserve. Rime/Monero fees per transfer are tiny
+    # (~1e8-1e9 atomic for a normal tx) but a generous reserve protects
+    # against multi-destination fee growth and round-up surprises.
+    FEE_RESERVE_ATOMIC = 5 * 10**10   # 0.05 GLAC
+    available = unlocked - FEE_RESERVE_ATOMIC
+    if available < MIN_PAYOUT_ATOMIC:
+        return 0   # nothing meaningful to send yet; wait for more maturity
+
+    total_owed = sum(a for _, a in eligible)
+    if total_owed > available:
+        # Partial round: scale each miner's payout by available/total_owed
+        # so everyone gets paid a fair fraction of what they're owed.
+        # Anyone whose pro-rata share falls below MIN_PAYOUT_ATOMIC waits
+        # for the next round.
+        scale = available / total_owed
+        capped = []
+        for w, a in eligible:
+            share = int(a * scale)
+            if share >= MIN_PAYOUT_ATOMIC:
+                capped.append((w, share))
+        if not capped:
+            return 0
+        eligible = capped
 
     # Build a SINGLE multi-destination transfer per wallet-rpc call when
     # possible -- saves on fees and ring-signature work. wallet-rpc's
@@ -972,9 +1081,16 @@ def cold_sweep_once():
         print(f"[pool] cold-sweep: get_balance failed: {e}", file=sys.stderr)
         return
     unlocked = int(bal.get("unlocked_balance", 0))
-    if unlocked <= COLD_HOT_BUFFER_ATOMIC:
+    # v1.1.10: miners come first. Subtract everything they're owed from
+    # the spendable balance before deciding what to sweep -- otherwise
+    # the cold sweep starves the payout loop when pending balances
+    # exceed the buffer. Only the genuine surplus goes to cold storage.
+    pending_owed = sum(a for a in compute_pending_balances().values()
+                       if a >= MIN_PAYOUT_ATOMIC)
+    available_for_sweep = max(0, unlocked - pending_owed)
+    if available_for_sweep <= COLD_HOT_BUFFER_ATOMIC:
         return
-    amount = unlocked - COLD_HOT_BUFFER_ATOMIC
+    amount = available_for_sweep - COLD_HOT_BUFFER_ATOMIC
     try:
         r = wallet_rpc("transfer", {
             "destinations": [{"amount": amount, "address": COLD_ADDRESS}],
@@ -1077,6 +1193,100 @@ def maturity_loop():
         time.sleep(MATURITY_REFRESH_S)
 
 
+# ---- credit reconciliation -----------------------------------------------
+#
+# submit_block records a "block found" event the moment the daemon returns
+# OK for our submitblock RPC. In practice the daemon can accept multiple
+# competing blocks at the same height (alt-chain races) and only one ends
+# up canonical -- the others get orphaned. submit_block credits ALL of
+# them, so pool-credits.json accrues phantom credits whose coinbase outputs
+# never actually arrive in the pool wallet. The user-visible symptom is
+# "pending X GLAC" reading higher than the wallet actually holds; partial
+# payouts then fail to converge because the math is off.
+#
+# Reconcile against the wallet's get_transfers list -- it's the only
+# source of truth for "money the pool actually received". For every
+# credited height that doesn't have a matching wallet arrival after a
+# safety age in confirmations, drop the credit. Also collapse duplicate
+# credits per (height, finder) -- only ONE block of value ever lands at
+# a given height regardless of how many forks the daemon momentarily
+# accepted, so a second credit at the same height for the same miner is
+# always phantom.
+
+RECONCILE_INTERVAL_S = int(os.environ.get("RECONCILE_INTERVAL_S", "300"))
+# How many blocks of confirmation must pass before we'll declare a
+# credit phantom. Wallet sometimes lags the daemon by a block or two.
+RECONCILE_SAFETY_AGE = int(os.environ.get("RECONCILE_SAFETY_AGE", "10"))
+
+
+def reconcile_credits_once():
+    """Walk pool-credits.json, drop entries whose block coinbase never
+    arrived in the pool wallet (orphaned) and de-duplicate per
+    (height, finder). Idempotent -- safe to run any number of times."""
+    try:
+        ins = wallet_rpc("get_transfers", {"in": True, "pool": False}, timeout=15)
+    except Exception as e:
+        print(f"[pool] reconcile: get_transfers failed: {e}", file=sys.stderr)
+        return
+    arrived = {int(t.get("height", 0)): int(t.get("amount", 0))
+               for t in (ins.get("in") or [])}
+    try:
+        wh_resp = wallet_rpc("get_height", timeout=8)
+        wallet_h = int(wh_resp.get("height", 0))
+    except Exception:
+        wallet_h = 0
+    credits = load_json_file(CREDITS_FILE, [])
+    kept = []
+    seen = set()                 # (height, wallet) we've already kept
+    dropped = []
+    for c in credits:
+        h = int(c.get("height", 0))
+        w = c.get("wallet", "")
+        key = (h, w)
+        # Recently mined: don't classify as orphan yet (wallet may not
+        # have scanned its coinbase output for this height).
+        too_recent = (wallet_h - h) < RECONCILE_SAFETY_AGE
+        if h in arrived and key not in seen:
+            # Snap to actually-received amount; drops a few atomic units
+            # of double-counting from the daemon's reward field.
+            c["atomic"] = arrived[h]
+            kept.append(c)
+            seen.add(key)
+        elif too_recent:
+            kept.append(c)
+        else:
+            dropped.append(c)
+    if dropped:
+        for d in dropped:
+            print(f"[pool] reconcile: dropping phantom credit height={d.get('height')} "
+                  f"amount={d.get('atomic', 0)/1e12:.4f} GLAC wallet={d.get('wallet','')[:12]}...",
+                  file=sys.stderr)
+        save_json_atomic(CREDITS_FILE, kept)
+    # Same housekeeping for the public block list (cosmetic).
+    blocks = load_json_file(BLOCKS_FILE, [])
+    bkept = []
+    bseen = set()
+    for b in blocks:
+        h = int(b.get("height", 0))
+        too_recent = (wallet_h - h) < RECONCILE_SAFETY_AGE
+        if (h in arrived and h not in bseen) or too_recent:
+            if h in arrived:
+                b["reward_atomic"] = arrived[h]
+            bkept.append(b)
+            bseen.add(h)
+    if len(bkept) != len(blocks):
+        save_json_atomic(BLOCKS_FILE, bkept)
+
+
+def reconcile_loop():
+    while True:
+        time.sleep(RECONCILE_INTERVAL_S)
+        try:
+            reconcile_credits_once()
+        except Exception as e:
+            print(f"[pool] reconcile_loop error: {e}", file=sys.stderr)
+
+
 def maturity_snapshot():
     """Return a copy of the maturity cache, plus a `refreshed_s_ago`
     derived field. Returns None if we have never gotten a successful
@@ -1113,6 +1323,9 @@ def main():
 
     maturity = threading.Thread(target=maturity_loop, name="maturity", daemon=True)
     maturity.start()
+
+    reconciler = threading.Thread(target=reconcile_loop, name="reconcile", daemon=True)
+    reconciler.start()
 
     server = ThreadedHTTPServer(("0.0.0.0", POOL_PORT), PoolHandler)
     print(f"[pool] listening on 0.0.0.0:{POOL_PORT}")

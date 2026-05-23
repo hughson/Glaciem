@@ -193,13 +193,54 @@ static dispatch_queue_t pool_submit_queue(void) {
   return q;
 }
 
+/* v1.1.10: track consecutive invalid-share rejections so the worker can
+ * detect a stale dataset / borked template and force a full refresh
+ * before the pool's ban threshold trips. If the pool says "invalid
+ * share" CONSECUTIVE_INVALID_THRESHOLD times in a row, the worker
+ * thread observes g_force_refresh on its next iteration and:
+ *   1. discards the current job_id / template / dataset (have_ds = 0)
+ *   2. re-fetches the job from the pool
+ *   3. rebuilds the dataset from the freshly-received seed_hash
+ * That self-corrects whatever drift caused the rejection — usually an
+ * epoch transition the miner missed. Honest miners never see this code
+ * path; it only kicks in when something has genuinely gone wrong. */
+static int g_consecutive_invalid    = 0;
+static int g_force_refresh          = 0;
+#define CONSECUTIVE_INVALID_THRESHOLD 3
+
 static void submit_share_async(NSString *jobId, NSString *wallet,
                                uint32_t nonce, int is_full_block) {
   dispatch_async(pool_submit_queue(), ^{
     NSDictionary *sr = pool_submit_share(jobId, wallet, nonce, is_full_block);
-    if (sr && [sr[@"block"] boolValue]) {
+    if (!sr) return;        // network failure -- don't update counters
+
+    BOOL accepted = [sr[@"accepted"] boolValue];
+    NSString *reason = sr[@"reason"];
+    BOOL is_block   = [sr[@"block"] boolValue];
+
+    if (accepted || is_block) {
+      // A good share clears the consecutive-invalid streak; one
+      // transient bad submit doesn't accumulate forever.
       pthread_mutex_lock(&g_lock);
-      g_stats.blocks_found++;
+      if (is_block) g_stats.blocks_found++;
+      g_consecutive_invalid = 0;
+      pthread_mutex_unlock(&g_lock);
+      return;
+    }
+
+    // Pool rejected the share. Only "invalid share" indicates a hash
+    // mismatch (stale dataset, etc.). Things like "stale job",
+    // "duplicate", or "rate limit" are normal and shouldn't trip the
+    // force-refresh logic.
+    if ([reason isEqualToString:@"invalid share"]) {
+      pthread_mutex_lock(&g_lock);
+      g_consecutive_invalid++;
+      int n = g_consecutive_invalid;
+      if (n >= CONSECUTIVE_INVALID_THRESHOLD) {
+        g_force_refresh = 1;
+        NSLog(@"[miner] %d consecutive invalid-share rejections from pool; "
+              @"forcing template + dataset refresh", n);
+      }
       pthread_mutex_unlock(&g_lock);
     }
   });
@@ -492,6 +533,21 @@ static void *worker(void *arg) {
     }
     pthread_mutex_lock(&g_lock); g_stats.no_address=0; pthread_mutex_unlock(&g_lock);
     NSString *mine_to = [NSString stringWithUTF8String:chosen];
+
+    /* v1.1.10: if the async submitter saw >=N consecutive invalid-share
+     * rejections from the pool, drop the cached dataset so we rebuild
+     * from the next job's seed_hash. The OUTER iteration also runs
+     * pool_get_job below, so the combination of (have_ds = 0 + a fresh
+     * job fetch) guarantees we re-sync against whatever the pool now
+     * thinks the current epoch is. */
+    pthread_mutex_lock(&g_lock);
+    if (g_force_refresh) {
+      g_force_refresh = 0;
+      g_consecutive_invalid = 0;
+      have_ds = 0;
+      memset(cur_seed, 0, sizeof cur_seed);
+    }
+    pthread_mutex_unlock(&g_lock);
 
     /* v1.1.6: in pool mode, fetch the job from the pool instead of
      * calling get_block_template on the daemon. The pool injects ITS

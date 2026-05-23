@@ -264,6 +264,13 @@ class MinerEngine(private val rpc: RpcClient) {
         startTimeNs = System.nanoTime()
         totalHashes = 0; blocksFound = 0; bestBits = 0; hashrate = 0.0
         var curSeed = ByteArray(0)
+        // v1.1.10: self-heal counter -- after N consecutive "invalid
+        // share" rejections from the pool, drop the cached dataset
+        // (clear curSeed) and let the next iteration rebuild it from
+        // the fresh job's seed_hash. Recovers from missed epoch
+        // transitions before the pool's ban threshold trips.
+        var consecutiveInvalid = 0
+        val CONSECUTIVE_INVALID_THRESHOLD = 3
         // v1.1.10: hoisted nonce base, advances monotonically by CHUNK*n
         // per batch. Seeded with random entropy so concurrent Android
         // miners on the same pool don't collide on the same nonce range.
@@ -279,6 +286,17 @@ class MinerEngine(private val rpc: RpcClient) {
         android.util.Log.i(TAG, "mining started (mode=$miningMode, ${activeCores()}/$maxCores threads)")
 
         while (running) {
+            // v1.1.10: defensive refresh. After N consecutive "invalid
+            // share" rejections from the pool, force the dataset cache
+            // to be rebuilt against the next job's seed_hash.
+            if (consecutiveInvalid >= CONSECUTIVE_INVALID_THRESHOLD) {
+                android.util.Log.w(TAG,
+                    "$consecutiveInvalid consecutive invalid-share rejections; " +
+                    "refreshing template + dataset")
+                curSeed = ByteArray(0)
+                consecutiveInvalid = 0
+            }
+
             // mine to the embedded wallet's own address. No fallback -- with no
             // wallet open yet, the miner refuses to mine.
             val mineTo = walletAddr
@@ -423,9 +441,17 @@ class MinerEngine(private val rpc: RpcClient) {
                         val r = rpc.poolSubmit(poolUrlSnapshot, poolJobId, mineTo,
                                                wL and 0xFFFFFFFFL, isFullBlock)
                         val isBlock = r?.optBoolean("block") ?: false
+                        val isAccepted = r?.optBoolean("accepted") == true
+                        val reason = r?.optString("reason") ?: ""
                         if (isBlock) blocksFound++
                         android.util.Log.i(TAG, "pool_submit nonce=$w full=$isFullBlock -> " +
-                            if (r?.optBoolean("accepted") == true) "accepted${if (isBlock) " (BLOCK!)" else ""}" else "rejected")
+                            if (isAccepted) "accepted${if (isBlock) " (BLOCK!)" else ""}" else "rejected ($reason)")
+                        // v1.1.10: track consecutive invalid responses for self-heal.
+                        if (isAccepted || isBlock) {
+                            consecutiveInvalid = 0
+                        } else if (reason == "invalid share") {
+                            consecutiveInvalid++
+                        }
                     }
                 } else {
                     // Solo: any winning nonce solves the block; take the first.
