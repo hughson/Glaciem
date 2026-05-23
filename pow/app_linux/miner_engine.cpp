@@ -176,6 +176,36 @@ QByteArray hex2bin(const QString &hex) {
 }
 QString bin2hex(const QByteArray &b) { return QString::fromLatin1(b.toHex()); }
 
+// --- v1.1.8: pool HTTP helpers ---------------------------------------------
+//
+// Pool endpoints take a flat JSON body (not the JSON-RPC envelope), so we
+// have dedicated wrappers around httpPost. The pool returns flat JSON too.
+// poolUrl is expected without a trailing slash (setPoolUrl trims it).
+
+QJsonObject poolGetJob(const QString &poolUrl, const QString &wallet) {
+    QString url = poolUrl + "/pool/job";
+    QJsonObject body{{"wallet", wallet}};
+    QByteArray resp = httpPost(url, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    if (resp.isEmpty()) return {};
+    auto doc = QJsonDocument::fromJson(resp);
+    return doc.isObject() ? doc.object() : QJsonObject{};
+}
+
+QJsonObject poolSubmitShare(const QString &poolUrl, const QString &jobId,
+                            const QString &wallet, quint32 nonce, bool isFullBlock) {
+    QString url = poolUrl + "/pool/submit";
+    QJsonObject body{
+        {"job_id",    jobId},
+        {"wallet",    wallet},
+        {"nonce",     (qint64)nonce},
+        {"full_block", isFullBlock},
+    };
+    QByteArray resp = httpPost(url, QJsonDocument(body).toJson(QJsonDocument::Compact));
+    if (resp.isEmpty()) return {};
+    auto doc = QJsonDocument::fromJson(resp);
+    return doc.isObject() ? doc.object() : QJsonObject{};
+}
+
 // nonce offset in a block blob: 3 leading varints + 32-byte prev_id.
 int nonceOffset(const QByteArray &blob) {
     int p = 0;
@@ -268,10 +298,26 @@ void WorkerThread::run() {
             continue;
         }
 
-        // get_block_template -- tries the endpoint list in order; Worker first
-        auto tpl = jsonRpcAny("get_block_template",
-                              QJsonObject{{"wallet_address", addr},
-                                          {"reserve_size", 8}});
+        // v1.1.8: branch on pool mode. Read poolEnabled/poolUrl under the
+        // lock so a Settings dialog "Save" takes effect at the start of
+        // the next batch (no app restart required).
+        bool    poolModeNow;
+        QString poolUrlNow;
+        {
+            QMutexLocker lk(&m_e->m_lock);
+            poolModeNow = m_e->m_poolEnabled;
+            poolUrlNow  = m_e->m_poolUrl;
+        }
+        QJsonObject tpl;
+        QString jobId;
+        if (poolModeNow) {
+            tpl   = poolGetJob(poolUrlNow, addr);
+            jobId = tpl.value("job_id").toString();
+        } else {
+            tpl = jsonRpcAny("get_block_template",
+                             QJsonObject{{"wallet_address", addr},
+                                         {"reserve_size", 8}});
+        }
         QString hbHex = tpl.value("blockhashing_blob").toString();
         QString tbHex = tpl.value("blocktemplate_blob").toString();
         if (hbHex.isEmpty() || tbHex.isEmpty()) {
@@ -285,7 +331,15 @@ void WorkerThread::run() {
         QByteArray tb = hex2bin(tbHex);
         QByteArray seedB = hex2bin(tpl.value("seed_hash").toString());
         uint64_t height = (uint64_t)tpl.value("height").toDouble();
-        uint64_t diff = (uint64_t)tpl.value("difficulty").toDouble();
+        // In pool mode the daemon's "difficulty" is replaced by share_difficulty
+        // (much easier); network_difficulty is reported separately so we can
+        // detect shares that ALSO solve the actual block.
+        uint64_t diff = poolModeNow
+                          ? (uint64_t)tpl.value("share_difficulty").toDouble()
+                          : (uint64_t)tpl.value("difficulty").toDouble();
+        uint64_t netDiff = poolModeNow
+                          ? (uint64_t)tpl.value("network_difficulty").toDouble()
+                          : diff;
         if (hb.isEmpty() || hb.size() > 250) { msleep(200); continue; }
         int noff = nonceOffset(hb);
         if (noff + 4 > hb.size()) { msleep(200); continue; }
@@ -362,16 +416,38 @@ void WorkerThread::run() {
 
         int win = winner.load();
         if (win >= 0 && noff + 4 <= tb.size()) {
-            tb[noff] = (char)win;
-            tb[noff + 1] = (char)(win >> 8);
-            tb[noff + 2] = (char)(win >> 16);
-            tb[noff + 3] = (char)(win >> 24);
-            auto sr = jsonRpcAny("submit_block",
-                                 QJsonArray{QString::fromLatin1(tb.toHex())});
-            if (sr.value("status").toString() == "OK") {
-                blocks++;
-                QMutexLocker lk(&m_e->m_lock);
-                m_e->m_blocksFound = blocks;
+            if (poolModeNow) {
+                // Re-hash the winning nonce against network_difficulty so we
+                // know whether to flag full_block=true (which tells the pool
+                // to forward as submitblock to the daemon).
+                QByteArray hbCheck = hb;
+                hbCheck[noff]     = (char)win;
+                hbCheck[noff + 1] = (char)(win >> 8);
+                hbCheck[noff + 2] = (char)(win >> 16);
+                hbCheck[noff + 3] = (char)(win >> 24);
+                uint8_t mh[32];
+                lattice_hash_ds((const uint8_t*)hbCheck.constData(),
+                                hbCheck.size(), ds.data(), mh);
+                bool isFull = (netDiff > 0) && meetsTarget(mh, netDiff);
+                auto sr = poolSubmitShare(poolUrlNow, jobId, addr,
+                                          (quint32)win, isFull);
+                if (sr.value("block").toBool()) {
+                    blocks++;
+                    QMutexLocker lk(&m_e->m_lock);
+                    m_e->m_blocksFound = blocks;
+                }
+            } else {
+                tb[noff]     = (char)win;
+                tb[noff + 1] = (char)(win >> 8);
+                tb[noff + 2] = (char)(win >> 16);
+                tb[noff + 3] = (char)(win >> 24);
+                auto sr = jsonRpcAny("submit_block",
+                                     QJsonArray{QString::fromLatin1(tb.toHex())});
+                if (sr.value("status").toString() == "OK") {
+                    blocks++;
+                    QMutexLocker lk(&m_e->m_lock);
+                    m_e->m_blocksFound = blocks;
+                }
             }
         }
 
@@ -613,6 +689,38 @@ void MinerEngine::setNodePort(int port) {
     emit nodeChanged();
 }
 
+// v1.1.8: pool config accessors + setters. Worker thread re-reads
+// m_poolEnabled / m_poolUrl at the start of each batch under m_lock,
+// so a Settings dialog "Save" takes effect within ~1 second.
+bool MinerEngine::poolEnabled() const {
+    QMutexLocker lk(&m_lock);
+    return m_poolEnabled;
+}
+QString MinerEngine::poolUrl() const {
+    QMutexLocker lk(&m_lock);
+    return m_poolUrl;
+}
+void MinerEngine::setPoolEnabled(bool on) {
+    {
+        QMutexLocker lk(&m_lock);
+        if (m_poolEnabled == on) return;
+        m_poolEnabled = on;
+    }
+    saveSettings();
+    emit poolChanged();
+}
+void MinerEngine::setPoolUrl(const QString &url) {
+    QString trimmed = url.trimmed();
+    while (trimmed.endsWith('/')) trimmed.chop(1);
+    {
+        QMutexLocker lk(&m_lock);
+        if (m_poolUrl == trimmed) return;
+        m_poolUrl = trimmed;
+    }
+    saveSettings();
+    emit poolChanged();
+}
+
 void MinerEngine::start() {
     if (m_worker && m_worker->isRunning()) return;
     if (m_worker) { delete m_worker; m_worker = nullptr; }
@@ -726,12 +834,17 @@ void MinerEngine::loadSettings() {
     QSettings s("Glaciem", "GlaciemMiner");
     m_nodeHost = s.value("nodeHost", "glaciem-rpc.frostmine.workers.dev").toString();
     m_nodePort = s.value("nodePort", 443).toInt();
+    m_poolEnabled = s.value("poolEnabled", false).toBool();
+    m_poolUrl     = s.value("poolUrl",
+        QStringLiteral("https://glaciem-pool.frostmine.workers.dev")).toString();
 }
 
 void MinerEngine::saveSettings() {
     QSettings s("Glaciem", "GlaciemMiner");
     s.setValue("nodeHost", m_nodeHost);
     s.setValue("nodePort", m_nodePort);
+    s.setValue("poolEnabled", m_poolEnabled);
+    s.setValue("poolUrl",     m_poolUrl);
 }
 
 void MinerEngine::tick() { emit statsChanged(); }

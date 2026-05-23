@@ -467,7 +467,12 @@ Window {
         title: "SETTINGS"
         property alias hostText: hostField.text
         property alias portText: portField.text
-        onAboutToShow: { hostField.text = MinerEngine.nodeHost; portField.text = MinerEngine.nodePort }
+        onAboutToShow: {
+            hostField.text = MinerEngine.nodeHost
+            portField.text = MinerEngine.nodePort
+            poolToggle.checked = MinerEngine.poolEnabled
+            poolUrlField.text = MinerEngine.poolUrl
+        }
         contentItem: ColumnLayout {
             spacing: 10
             Text {
@@ -490,6 +495,42 @@ Window {
                 font { family: root.monoFamily; pixelSize: 12 }
                 background: Rectangle { color: root.card; radius: 6 }
             }
+
+            // -- v1.1.8: pool mode --
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: dim; opacity: 0.4 }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; color: dim
+                text: poolToggle.checked
+                    ? "MINING MODE — POOL. Shares submitted to the pool URL below; payouts arrive once your contribution crosses the pool's threshold."
+                    : "MINING MODE — SOLO. Direct daemon submission; you keep 100% of any block you find but finds are rare with one CPU."
+                font { family: root.monoFamily; pixelSize: 10 }
+            }
+            RowLayout {
+                Layout.fillWidth: true; spacing: 10
+                Text {
+                    text: "POOL MODE"
+                    color: poolToggle.checked ? amber : dim
+                    font { family: root.monoFamily; pixelSize: 11; bold: true; letterSpacing: 1 }
+                }
+                Item { Layout.fillWidth: true }
+                Switch {
+                    id: poolToggle
+                    checked: false
+                }
+            }
+            Text {
+                visible: poolToggle.checked
+                text: "pool URL"; color: dim
+                font.family: root.monoFamily; font.pixelSize: 10
+            }
+            TextField {
+                id: poolUrlField
+                visible: poolToggle.checked
+                Layout.fillWidth: true; color: root.white_
+                font { family: root.monoFamily; pixelSize: 11 }
+                background: Rectangle { color: root.card; radius: 6 }
+            }
+
             // -- wallet management --
             Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: dim; opacity: 0.4 }
             Text {
@@ -512,6 +553,10 @@ Window {
                 onClicked: {
                     MinerEngine.nodeHost = hostField.text.trim();
                     MinerEngine.nodePort = parseInt(portField.text) || 443;
+                    MinerEngine.poolEnabled = poolToggle.checked;
+                    var u = poolUrlField.text.trim();
+                    if (u.length === 0) u = "https://glaciem-pool.frostmine.workers.dev";
+                    MinerEngine.poolUrl = u;
                     settingsDialog.close();
                 }
             }

@@ -14,6 +14,39 @@ at build time.
 
 ## [Unreleased]
 
+## [1.1.8] – 2026-05-22
+
+Linux joins the pool-mode lineup. **All four platforms** (Mac, Android,
+Windows, Linux) now support connecting to the official pool — or any
+compatible pool — directly from Settings.
+
+### Added
+- Linux miner: `MinerEngine` exposes `poolEnabled` + `poolUrl` as
+  Q_PROPERTYs persisted via `QSettings` under `Glaciem/GlaciemMiner`.
+- `poolGetJob()` / `poolSubmitShare()` helpers in `miner_engine.cpp`
+  (libcurl-based, parsing flat JSON responses).
+- Settings dialog (`qml/Main.qml`) gains a POOL MODE Switch + Pool URL
+  field that appears when pool mode is on. Same mental model as the
+  other platforms.
+
+### Changed
+- Mining loop in `WorkerThread::run()` branches on pool mode:
+  - Pool: fetch via `POST {poolUrl}/pool/job`, use `share_difficulty`
+    for the inner meets-target check, on a found share re-hash against
+    `network_difficulty` to flag `full_block:true`, submit via
+    `POST {poolUrl}/pool/submit`.
+  - Solo: unchanged (`get_block_template` via the existing peer-cache
+    fallback list, then `submit_block`).
+
+### Notes
+- Pool mode is OFF by default — existing Linux users see no behavioral
+  change after upgrade unless they enable it in Settings.
+- Wallet keys, history, addresses all carry forward; just replace the
+  `.AppImage`, `chmod +x`, run.
+- Built via the existing `pow/app_linux/build.sh` + `rebuild-appimage.sh`
+  pipeline on the Hetzner Ubuntu 26.04 host. AppImage runs on any
+  modern x86_64 distro.
+
 ## [1.1.7] – 2026-05-22
 
 Windows joins the pool-mode lineup (Mac + Android shipped in 1.1.6).
@@ -244,7 +277,8 @@ over-aggressive polling intervals and removing a wasted admin-endpoint call.
 - Lattice is an original proof-of-work and has not had external
   cryptographic review. Mine at your own risk.
 
-[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.7...HEAD
+[Unreleased]: https://github.com/hughson/Glaciem/compare/v1.1.8...HEAD
+[1.1.8]: https://github.com/hughson/Glaciem/releases/tag/v1.1.8
 [1.1.7]: https://github.com/hughson/Glaciem/releases/tag/v1.1.7
 [1.1.6]: https://github.com/hughson/Glaciem/releases/tag/v1.1.6
 [1.1.5]: https://github.com/hughson/Glaciem/releases/tag/v1.1.5

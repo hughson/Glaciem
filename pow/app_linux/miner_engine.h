@@ -53,6 +53,12 @@ class MinerEngine : public QObject {
     // --- settings ---
     Q_PROPERTY(QString nodeHost READ nodeHost WRITE setNodeHost NOTIFY nodeChanged)
     Q_PROPERTY(int nodePort READ nodePort WRITE setNodePort NOTIFY nodeChanged)
+    // v1.1.8: pool mode. When enabled, the mining loop fetches jobs from
+    // {poolUrl}/pool/job and submits shares to /pool/submit instead of
+    // talking to a daemon directly. Block rewards go to the pool wallet;
+    // miners are credited proportionally to share contribution.
+    Q_PROPERTY(bool    poolEnabled READ poolEnabled WRITE setPoolEnabled NOTIFY poolChanged)
+    Q_PROPERTY(QString poolUrl     READ poolUrl     WRITE setPoolUrl     NOTIFY poolChanged)
 
 public:
     explicit MinerEngine(QObject *parent = nullptr);
@@ -82,6 +88,11 @@ public:
     int nodePort() const;
     void setNodeHost(const QString &host);
     void setNodePort(int port);
+
+    bool    poolEnabled() const;
+    QString poolUrl() const;
+    void    setPoolEnabled(bool on);
+    void    setPoolUrl(const QString &url);
 
 public slots:
     // --- mining control ---
@@ -117,6 +128,7 @@ public slots:
 signals:
     void statsChanged();
     void nodeChanged();
+    void poolChanged();
     // address + 25-word seed of a freshly generated wallet, waiting for the
     // user to confirm before it becomes the app's embedded wallet
     void generatedWallet(QString address, QString seed);
@@ -152,6 +164,9 @@ private:
 
     QString m_nodeHost;
     int m_nodePort = 0;
+    // v1.1.8: pool mode state
+    bool    m_poolEnabled = false;
+    QString m_poolUrl = QStringLiteral("https://glaciem-pool.frostmine.workers.dev");
 
     // pending generated wallet awaiting user confirm
     QString m_pendingAddr, m_pendingSeed;
