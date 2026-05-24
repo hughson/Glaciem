@@ -783,7 +783,17 @@ private struct SendSheet: View {
                     .frame(maxWidth: 330)
             }
             Button(action: {
-                sendResult = String(cString: miner_send(sendAddr, Double(sendAmount) ?? 0))
+                let r = String(cString: miner_send(sendAddr, Double(sendAmount) ?? 0))
+                sendResult = r
+                // Clear the recipient + amount on a successful send so the
+                // user can't accidentally hit SEND a second time and pay
+                // twice. Keep both fields on failure so the user can fix
+                // whatever was wrong (typo, insufficient funds, etc.) and
+                // retry without re-typing.
+                if r.hasPrefix("sent") {
+                    sendAddr = ""
+                    sendAmount = ""
+                }
             }) {
                 Text("SEND")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))

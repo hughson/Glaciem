@@ -709,6 +709,15 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
                         }
                         result = r
                         sending = false
+                        // Clear the recipient + amount on a successful
+                        // send so the user can't accidentally double-pay
+                        // by hitting SEND again. Keep them on failure so
+                        // the user can fix the issue and retry without
+                        // re-typing.
+                        if (r.startsWith("sent")) {
+                            addr = ""
+                            amount = ""
+                        }
                     }
                 },
             ) { Text("SEND", color = amber, fontWeight = FontWeight.Bold) }

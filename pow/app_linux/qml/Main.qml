@@ -328,7 +328,17 @@ Window {
 
     Connections {
         target: MinerEngine
-        function onSendResult(line) { sendDialog.resultText = line }
+        // Clear the recipient + amount on a successful send so the user
+        // can't accidentally hit SEND a second time and double-pay.
+        // Keep them on failure so they can fix the issue and retry
+        // without re-typing.
+        function onSendResult(line) {
+            sendDialog.resultText = line
+            if (line && line.indexOf("sent") === 0) {
+                addrField.text = ""
+                amountField.text = ""
+            }
+        }
         function onSweepResult(line) { sendDialog.resultText = line }
         function onHistoryResult(text) { historyDialog.text = text || "no sends or receives yet" }
     }
