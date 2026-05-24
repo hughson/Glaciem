@@ -258,17 +258,22 @@ async function fetchStats() {
       sect.style.display = "";
       const unlocked = fmtGlac(m.unlocked_atomic || 0);
       const locked   = fmtGlac(m.locked_atomic   || 0);
+      const total    = fmtGlac(m.balance_atomic  || 0);
       const outs     = m.unspent_outputs ?? 0;
       if ((m.locked_atomic || 0) <= 0) {
         $("mat-summary").innerHTML =
-          `<strong>All rewards mature.</strong> Unlocked: <span class="mono accent">${unlocked}</span>. ` +
-          `Payouts fire automatically when a wallet's pending credit clears the minimum.`;
+          `<strong>Pool wallet:</strong> <span class="mono accent">${total}</span> ` +
+          `(all rewards mature). Payouts fire automatically when a ` +
+          `wallet's pending credit clears the minimum.`;
         $("mat-next").innerHTML = "";
       } else {
+        // Show the total first so the eye lands on the number that
+        // matches the per-miner pending balance below. The unlocked /
+        // maturing split is secondary detail underneath.
         $("mat-summary").innerHTML =
-          `<strong>Unlocked:</strong> <span class="mono accent">${unlocked}</span>` +
-          `&nbsp;&nbsp;<strong>Maturing:</strong> <span class="mono">${locked}</span>` +
-          ` <span class="dim">across ${outs} coinbase output${outs === 1 ? "" : "s"}</span>`;
+          `<strong>Pool wallet:</strong> <span class="mono accent">${total}</span> ` +
+          `<span class="dim">(${unlocked} unlocked + ${locked} maturing ` +
+          `across ${outs} coinbase output${outs === 1 ? "" : "s"})</span>`;
         const secs   = m.seconds_to_next_unlock ?? 0;
         const blocks = m.blocks_to_next_unlock  ?? 0;
         const eta    = secs >= 3600
