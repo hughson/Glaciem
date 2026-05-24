@@ -775,6 +775,32 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         # v1.1 hardening: Lattice-verify the share before crediting.
         valid, vinfo = verify_share_against_job(job_snap, nonce)
         if not valid:
+            # v1.1.12: don't penalize stale-job invalid shares. When the
+            # pool rotates jobs (new block found, new template), in-flight
+            # miner hashes naturally fail verification against the new
+            # target until the miner picks up the next job. Those shares
+            # show up here with an *older* job_id that's still in
+            # recent_jobs (i.e. not stale enough to hit the earlier
+            # stale-job branch) but isn't current_job. Counting them
+            # toward the ban threshold means honest miners with normal
+            # job-pickup latency get banned periodically -- which is what
+            # was happening.
+            #
+            # Cheater detection still works: a real attacker has to forge
+            # shares against the *current* job_id to credit themselves
+            # (older jobs' template_data is no longer the work the pool
+            # is paying for), so only current-job invalid shares count.
+            current_top = current_job["job_id"] if current_job else None
+            if job_id != current_top:
+                with STATE_LOCK:
+                    pool_stats["rejects_by_reason"].setdefault(
+                        "stale_against_old_job", 0)
+                    pool_stats["rejects_by_reason"]["stale_against_old_job"] += 1
+                return self._send_json(200, {
+                    "accepted": False,
+                    "reason":   "stale -- newer job available",
+                })
+
             with _hard_lock:
                 _wallet_bad_count[wallet] += 1
                 bad = _wallet_bad_count[wallet]
