@@ -287,6 +287,24 @@ current_job = None
 # OrderedDict: job_id -> { template metadata + submissions set }
 recent_jobs = collections.OrderedDict()
 
+# v1.1.13: heights we've already credited (orphan-double-credit guard).
+# When two miners both find full-block-meeting nonces on the same
+# template, the daemon accepts both submissions, and `settle_round`
+# would otherwise run TWICE -- crediting each submitting miner the
+# full block reward against their accumulated shares since the last
+# reset. Pool wallet only ever receives ONE coinbase (the canonical
+# block; the other orphans), so the second credit is a phantom. We
+# refuse to write the credit twice. First-to-settle wins; later
+# submissions for the same height are silently dropped from credit
+# accounting (the daemon still gets the submitblock attempt, that's
+# fine -- redundant submissions of the same chain position cost
+# nothing).
+#
+# This set is populated from pool-credits.json on startup, so the guard
+# survives restarts. New heights are added inside the STATE_LOCK when
+# settle_round runs.
+_settled_heights: set[int] = set()
+
 # wallet -> dict of share counters + sliding-window share history
 miner_stats = {}
 
@@ -312,6 +330,12 @@ pool_stats = {
         "bad_request":   0,
         "banned":        0,
     },
+    # v1.1.13: count orphan-double-credit guard firings. Non-zero is
+    # normal and expected -- it means two miners hit full-block target
+    # on the same template and we correctly refused to pay both. Each
+    # firing represents ~35 GLAC of phantom credit we DIDN'T write to
+    # the ledger.
+    "orphan_dedupes":  0,
 }
 
 
@@ -478,6 +502,22 @@ def submit_block(job, nonce, finder_wallet):
                 "net_diff":     job["network_difficulty"],
             }
             with STATE_LOCK:
+                # v1.1.13: orphan-double-credit guard. If a credit at
+                # this height has already been written (i.e. an earlier
+                # submitter beat us to settle_round), DO NOT credit
+                # again. The pool wallet receives only one coinbase per
+                # height; crediting twice creates a phantom that gets
+                # paid out as real GLAC before the reconciler can catch
+                # it. First-to-settle wins.
+                if block["height"] in _settled_heights:
+                    pool_stats["orphan_dedupes"] += 1
+                    print(f"[pool] BLOCK submitted at height={block['height']} but "
+                          f"already settled; SKIPPING credit (would have gone to "
+                          f"{finder_wallet[:12]}...). This is the orphan-race guard; "
+                          f"normal and expected when multiple miners hit full-block "
+                          f"target on the same template.", file=sys.stderr)
+                    return {"accepted": True, "block": True}
+                _settled_heights.add(block["height"])
                 pool_stats["blocks_total"] += 1
                 pool_stats["blocks_today"] += 1
                 pool_stats["last_block"]    = block
@@ -816,6 +856,9 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                 # too early, etc.) vs the miner just running that fast.
                 "submits_total":        pool_stats["submits_total"],
                 "rejects_by_reason":    dict(pool_stats["rejects_by_reason"]),
+                # v1.1.13: orphan-double-credit guard count. Non-zero
+                # is healthy and expected on a multi-miner pool.
+                "orphan_dedupes":       pool_stats["orphan_dedupes"],
             }
         self._send_json(200, payload)
 
@@ -1213,7 +1256,7 @@ def maturity_loop():
 # accepted, so a second credit at the same height for the same miner is
 # always phantom.
 
-RECONCILE_INTERVAL_S = int(os.environ.get("RECONCILE_INTERVAL_S", "300"))
+RECONCILE_INTERVAL_S = int(os.environ.get("RECONCILE_INTERVAL_S", "60"))
 # How many blocks of confirmation must pass before we'll declare a
 # credit phantom. Wallet sometimes lags the daemon by a block or two.
 RECONCILE_SAFETY_AGE = int(os.environ.get("RECONCILE_SAFETY_AGE", "10"))
@@ -1221,8 +1264,24 @@ RECONCILE_SAFETY_AGE = int(os.environ.get("RECONCILE_SAFETY_AGE", "10"))
 
 def reconcile_credits_once():
     """Walk pool-credits.json, drop entries whose block coinbase never
-    arrived in the pool wallet (orphaned) and de-duplicate per
-    (height, finder). Idempotent -- safe to run any number of times."""
+    arrived in the pool wallet (orphaned), and -- when multiple credits
+    exist at the same height -- distribute the actually-received amount
+    among them by share ratio. Idempotent.
+
+    Background: when two miners both find full-block nonces on the same
+    template, both submissions are accepted by the daemon initially.
+    settle_round runs for each, crediting each submitter the full block
+    reward against THEIR accumulated shares (post-reset). Only one of
+    those blocks is canonical; the other orphans. Pool wallet receives
+    ONE coinbase but pool-credits.json has TWO credit entries at full
+    reward. Earlier dedupe keyed by (height, wallet) missed this because
+    the wallets are different.
+
+    Fix: dedupe by height. If multiple credits exist at a height where
+    the wallet received a coinbase, distribute the actual amount among
+    them by share ratio (same fairness model as the normal proportional
+    payout). Lost-race miners still get a fair slice of the actual win
+    in proportion to the work they did."""
     try:
         ins = wallet_rpc("get_transfers", {"in": True, "pool": False}, timeout=15)
     except Exception as e:
@@ -1236,33 +1295,72 @@ def reconcile_credits_once():
     except Exception:
         wallet_h = 0
     credits = load_json_file(CREDITS_FILE, [])
-    kept = []
-    seen = set()                 # (height, wallet) we've already kept
-    dropped = []
+
+    # Bucket by height
+    by_height = collections.OrderedDict()
     for c in credits:
         h = int(c.get("height", 0))
-        w = c.get("wallet", "")
-        key = (h, w)
-        # Recently mined: don't classify as orphan yet (wallet may not
-        # have scanned its coinbase output for this height).
+        by_height.setdefault(h, []).append(c)
+
+    kept = []
+    dropped = []
+    rescaled = 0
+    for h, group in by_height.items():
         too_recent = (wallet_h - h) < RECONCILE_SAFETY_AGE
-        if h in arrived and key not in seen:
-            # Snap to actually-received amount; drops a few atomic units
-            # of double-counting from the daemon's reward field.
-            c["atomic"] = arrived[h]
-            kept.append(c)
-            seen.add(key)
+        if h in arrived:
+            actual = arrived[h]
+            if len(group) == 1:
+                # Single credit at this height -- snap to actual.
+                if group[0].get("atomic") != actual:
+                    group[0]["atomic"] = actual
+                kept.append(group[0])
+            else:
+                # Multiple credits at same height -- orphan race.
+                # Distribute the actual coinbase by share ratio.
+                total_shares = sum(int(c.get("shares", 0)) for c in group)
+                if total_shares > 0:
+                    assigned = 0
+                    for c in group[:-1]:
+                        c["atomic"] = int(actual * int(c.get("shares", 0)) / total_shares)
+                        assigned += c["atomic"]
+                        if c["atomic"] > 0:
+                            kept.append(c)
+                        else:
+                            dropped.append(c)
+                    # Last entry gets the remainder so rounding doesn't lose dust.
+                    last = group[-1]
+                    last["atomic"] = max(0, actual - assigned)
+                    if last["atomic"] > 0:
+                        kept.append(last)
+                    else:
+                        dropped.append(last)
+                else:
+                    # No share data -- keep one, drop the rest.
+                    group[0]["atomic"] = actual
+                    kept.append(group[0])
+                    for c in group[1:]:
+                        dropped.append(c)
+                rescaled += 1
         elif too_recent:
-            kept.append(c)
+            # Block hasn't matured in wallet yet -- don't touch.
+            kept.extend(group)
         else:
-            dropped.append(c)
-    if dropped:
+            # No matching wallet incoming, not recent -- all entries are
+            # phantoms (orphan or failed submission).
+            dropped.extend(group)
+    if dropped or rescaled:
         for d in dropped:
             print(f"[pool] reconcile: dropping phantom credit height={d.get('height')} "
                   f"amount={d.get('atomic', 0)/1e12:.4f} GLAC wallet={d.get('wallet','')[:12]}...",
                   file=sys.stderr)
+        if rescaled:
+            print(f"[pool] reconcile: distributed actual reward at {rescaled} "
+                  f"orphan-race height(s) by share ratio",
+                  file=sys.stderr)
         save_json_atomic(CREDITS_FILE, kept)
-    # Same housekeeping for the public block list (cosmetic).
+
+    # Same housekeeping for the public block list (cosmetic). One row per
+    # canonical block; if we'd recorded an orphan-race loser, drop it.
     blocks = load_json_file(BLOCKS_FILE, [])
     bkept = []
     bseen = set()
@@ -1307,6 +1405,25 @@ def main():
         print("[pool] WARNING: POOL_WALLET env var not set. Blocks the "
               "pool finds will fail to submit (daemon won't accept a "
               "block addressed to a placeholder).", file=sys.stderr)
+
+    # v1.1.13: prime the orphan-double-credit guard from existing
+    # credits + blocks files. Any height we've previously written a
+    # credit for must NOT be credited again after restart -- otherwise
+    # a daemon resubmit (which can happen if a miner retries) would
+    # create a phantom credit identical to the one we just spent
+    # restart effort to make sure didn't happen.
+    try:
+        existing_credits = load_json_file(CREDITS_FILE, [])
+        existing_blocks  = load_json_file(BLOCKS_FILE, [])
+        for c in existing_credits:
+            _settled_heights.add(int(c.get("height", 0)))
+        for b in existing_blocks:
+            _settled_heights.add(int(b.get("height", 0)))
+        print(f"[pool] settled-height guard primed with "
+              f"{len(_settled_heights)} historic heights")
+    except Exception as e:
+        print(f"[pool] WARNING: could not prime settled-height guard: {e}",
+              file=sys.stderr)
 
     # Prime the job once before opening the listener so the first
     # /pool/job request doesn't 503.
