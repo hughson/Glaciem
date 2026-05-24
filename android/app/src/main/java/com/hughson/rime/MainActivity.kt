@@ -53,8 +53,12 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import com.google.zxing.BarcodeFormat
 import com.google.zxing.qrcode.QRCodeWriter
+import com.journeyapps.barcodescanner.ScanContract
+import com.journeyapps.barcodescanner.ScanOptions
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -71,6 +75,19 @@ class MainActivity : ComponentActivity() {
     private lateinit var rpc: RpcClient
     private lateinit var engine: MinerEngine
     private var wakeLock: PowerManager.WakeLock? = null
+
+    // v1.1.12: settings state lives in Compose-tracked properties so the
+    // Settings dialog always reflects the current saved values. Earlier
+    // the Settings dialog was wired up with non-reactive snapshots read
+    // once in setContent; saving worked (SharedPreferences + engine
+    // both updated), but reopening the dialog read the stale snapshot
+    // and showed the toggle in the old position -- making it look like
+    // the change reverted unless the app was fully restarted.
+    private var uiNodeHost     by mutableStateOf("")
+    private var uiNodePort     by mutableStateOf(0)
+    private var uiMiningMode   by mutableStateOf(MiningMode.MAX)
+    private var uiPoolEnabled  by mutableStateOf(false)
+    private var uiPoolUrl      by mutableStateOf("https://glaciem-pool.frostmine.workers.dev")
 
     /** The embedded wallet's cache file lives in app-private storage. */
     private fun walletPath() = filesDir.resolve("rime-wallet").absolutePath
@@ -94,15 +111,18 @@ class MainActivity : ComponentActivity() {
         android.util.Log.i("Rime", "native self-test: ${if (selfTestOk) "PASS" else "FAIL"}")
 
         setContent {
+            // v1.1.12: read the reactive ui* properties so saveSettings()
+            // updates flow through and reopening the dialog shows the
+            // freshly-saved values.
             RimeScreen(
                 engine = engine,
                 selfTestOk = selfTestOk,
                 walletPath = walletPath(),
-                initialNodeHost = rpc.nodeHost,
-                initialNodePort = rpc.nodePort,
-                initialMiningMode = engine.getMiningMode(),
-                initialPoolEnabled = engine.getPoolEnabled(),
-                initialPoolUrl = engine.getPoolUrl(),
+                initialNodeHost = uiNodeHost,
+                initialNodePort = uiNodePort,
+                initialMiningMode = uiMiningMode,
+                initialPoolEnabled = uiPoolEnabled,
+                initialPoolUrl = uiPoolUrl,
                 onToggleMining = ::toggleMining,
                 onSaveSettings = ::saveSettings,
             )
@@ -144,14 +164,20 @@ class MainActivity : ComponentActivity() {
         // Mining intensity (default MAX so the apparent hashrate matches what
         // the v1.0.0 patch shipped; users who notice heat can dial down).
         val modeName = p.getString("miningMode", MiningMode.MAX.name) ?: MiningMode.MAX.name
-        engine.setMiningMode(
-            runCatching { MiningMode.valueOf(modeName) }.getOrDefault(MiningMode.MAX)
-        )
+        val mode = runCatching { MiningMode.valueOf(modeName) }.getOrDefault(MiningMode.MAX)
+        engine.setMiningMode(mode)
         // v1.1.6: pool mode. Default: off, official pool URL.
         val poolOn = p.getBoolean("poolEnabled", false)
-        val poolUrl = p.getString("poolUrl", "https://glaciem-pool.frostmine.workers.dev")
+        val poolUrlVal = p.getString("poolUrl", "https://glaciem-pool.frostmine.workers.dev")
             ?: "https://glaciem-pool.frostmine.workers.dev"
-        engine.setPoolConfig(poolOn, poolUrl)
+        engine.setPoolConfig(poolOn, poolUrlVal)
+        // v1.1.12: mirror the loaded values into Compose-tracked state
+        // so the Settings dialog opens with whatever's actually saved.
+        uiNodeHost    = rpc.nodeHost
+        uiNodePort    = rpc.nodePort
+        uiMiningMode  = mode
+        uiPoolEnabled = poolOn
+        uiPoolUrl     = poolUrlVal
     }
 
     private fun saveSettings(nodeHost: String, nodePort: Int, mode: MiningMode,
@@ -167,6 +193,15 @@ class MainActivity : ComponentActivity() {
             .putBoolean("poolEnabled", poolEnabled)
             .putString("poolUrl", poolUrl.trim())
             .apply()
+        // v1.1.12: keep Compose state in sync so reopening Settings
+        // shows the values the user just saved, not the launch-time
+        // snapshot. The engine + SharedPreferences updates above were
+        // already correct; this fixes the visual revert bug.
+        uiNodeHost    = rpc.nodeHost
+        uiNodePort    = rpc.nodePort
+        uiMiningMode  = mode
+        uiPoolEnabled = poolEnabled
+        uiPoolUrl     = poolUrl.trim()
     }
 
     override fun onDestroy() {
@@ -564,6 +599,48 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // v1.1.12: QR scanner for the recipient address. ZXing's
+    // ScanContract returns the decoded text in the result; we then
+    // validate it looks like an R-address before populating the field
+    // so a stray QR (a URL, vCard, etc.) doesn't silently overwrite
+    // what the user typed.
+    val rAddrRegex = remember { Regex("^R[1-9A-HJ-NP-Za-km-z]{94,105}$") }
+    val scanLauncher = rememberLauncherForActivityResult(ScanContract()) { scan ->
+        val raw = scan?.contents ?: return@rememberLauncherForActivityResult
+        // Some wallets encode their address as a "glaciem:R..." or
+        // "monero:R..." URI. Strip a protocol prefix and any trailing
+        // query string before validating.
+        val cleaned = raw
+            .substringAfter("://")
+            .substringAfter(":")
+            .substringBefore("?")
+            .trim()
+        if (rAddrRegex.matches(cleaned)) {
+            addr = cleaned
+            result = ""
+        } else {
+            result = "scanned QR isn't a Glaciem address"
+        }
+    }
+    fun launchScanner() {
+        val opts = ScanOptions().apply {
+            setDesiredBarcodeFormats(ScanOptions.QR_CODE)
+            setPrompt("Point camera at the recipient's Glaciem QR")
+            setBeepEnabled(false)
+            setOrientationLocked(false)
+        }
+        scanLauncher.launch(opts)
+    }
+    // Camera permission. zxing-android-embedded prompts automatically
+    // when the scanner activity launches, but on first-grant we still
+    // need a runtime permission flow.
+    val cameraPermLauncher = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestPermission(),
+    ) { granted ->
+        if (granted) launchScanner()
+        else result = "camera permission denied"
+    }
+
     Dialog(onDismissRequest = onDismiss) {
         Column(
             modifier = Modifier
@@ -578,13 +655,34 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
                 "unlocked balance: %.6f GLAC".format(stats.unlockedBalance / 1e12),
                 color = dim, fontFamily = mono, fontSize = 10.sp,
             )
-            OutlinedTextField(
-                value = addr, onValueChange = { addr = it },
-                label = { Text("recipient address") },
-                singleLine = true,
-                textStyle = TextStyle(color = Color.White, fontFamily = mono, fontSize = 11.sp),
-                colors = darkTextFieldColors(),
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                OutlinedTextField(
+                    value = addr, onValueChange = { addr = it },
+                    label = { Text("recipient address") },
+                    singleLine = true,
+                    textStyle = TextStyle(color = Color.White, fontFamily = mono, fontSize = 11.sp),
+                    colors = darkTextFieldColors(),
+                    modifier = Modifier.weight(1f),
+                )
+                // v1.1.12: scan-QR button. We rely on the launcher's
+                // permission contract to request CAMERA on first use.
+                val ctx = androidx.compose.ui.platform.LocalContext.current
+                TextButton(
+                    onClick = {
+                        val hasPerm = androidx.core.content.ContextCompat
+                            .checkSelfPermission(ctx, android.Manifest.permission.CAMERA) ==
+                            android.content.pm.PackageManager.PERMISSION_GRANTED
+                        if (hasPerm) launchScanner()
+                        else cameraPermLauncher.launch(android.Manifest.permission.CAMERA)
+                    },
+                ) {
+                    Text("SCAN", color = amber, fontFamily = mono,
+                        fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                }
+            }
             OutlinedTextField(
                 value = amount, onValueChange = { amount = it },
                 label = { Text("amount (GLAC)") },

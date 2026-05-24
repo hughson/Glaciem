@@ -14,6 +14,63 @@ at build time.
 
 ## [Unreleased]
 
+### Pool (server-only, no miner update needed) – 2026-05-23
+
+Real fix for the orphan-race double-credit bug that the v1.1.10/v1.1.11
+reconciler could only paper over after the fact. By the time the
+reconciler cleaned up a phantom credit, the pool had often already
+paid it out as real GLAC, leaving the legitimate finder with a pending
+balance bigger than what was actually in the wallet.
+
+- **Write-time dedupe.** `pool-server.py` now keeps a `_settled_heights`
+  set, primed at startup from existing `pool-credits.json` +
+  `pool-blocks.json`. When a `submit_block` succeeds and a credit for
+  that height has already been written, the second submitter's credit
+  is silently dropped (acknowledged to the miner as a block-find for
+  UI purposes, but no GLAC credit is added to the ledger). First-to-
+  settle wins.
+- **Reconciler dedupe by height, not (height, wallet).** Previously
+  two different wallets at the same height both passed through as
+  "first occurrence." Now the reconciler treats height as the unique
+  key. When multiple credits exist at a height (i.e., the write-time
+  guard was bypassed in some historical state), the actual wallet
+  coinbase is distributed by share ratio across contributors.
+- **Reconcile interval 5 min → 60 sec.** At most 1 minute of stale
+  credits between any anomaly and the cleanup.
+- **New `orphan_dedupes` counter on `/pool/stats`.** Counts every time
+  the write-time guard refused a double-credit. Non-zero is healthy.
+
+No miner-side change. Existing miners on v1.1.11 / v1.1.12 keep
+working unchanged.
+
+## [1.1.12] – 2026-05-23
+
+Android-only release: QR scanner on the Send sheet + settings-toggle-
+persists-visually fix.
+
+### Added
+- **Android Send sheet — QR scanner.** Tap the new SCAN button next
+  to the recipient address field; first use prompts for the Camera
+  permission, subsequent scans go straight to a ZXing viewfinder.
+  Scanned text is validated against the R-address regex before
+  populating the field, so a stray QR (URL, vCard, etc.) doesn't
+  silently overwrite what the user typed. `glaciem:R...` /
+  `monero:R...` URI prefixes are stripped before validation.
+- **Bundled `zxing-android-embedded` + AppCompat.** No Google Play
+  Services dependency, so the scanner works on Quest and other
+  non-GMS devices (though Quest doesn't expose a normal camera API
+  to apps; the feature is for phones).
+
+### Fixed
+- **Android settings toggle visually reverts on reopen.** `MainActivity`
+  was reading `initialPoolEnabled` and similar via `setContent {...}`
+  parameters captured at activity launch, then never refreshed. The
+  *mining* mode actually switched correctly (engine + SharedPreferences
+  were always updated on save), but reopening Settings displayed the
+  stale launch-time snapshot — making it look like the change had
+  reverted. Settings values are now backed by Compose `mutableStateOf`
+  in `MainActivity` and refreshed on every save.
+
 ## [1.1.11] – 2026-05-23
 
 Miner self-heal + richer pool diagnostics, prompted by a real epoch-

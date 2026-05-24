@@ -71,4 +71,11 @@ dependencies {
 
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("com.google.zxing:core:3.5.3")
+    // v1.1.12: QR scanner for the Send sheet. journeyapps wraps ZXing
+    // in an Android-native ScannerActivity; no Google Play Services
+    // dependency, so it works on Quest / non-GMS devices too.
+    implementation("com.journeyapps:zxing-android-embedded:4.3.0") {
+        isTransitive = false
+    }
+    implementation("androidx.appcompat:appcompat:1.7.0")  // zxing-embedded needs AppCompat
 }
