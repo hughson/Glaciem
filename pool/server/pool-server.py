@@ -128,6 +128,13 @@ VERIFY_LIB_PATH       = os.environ.get(
 # operator sees the wallet is in trouble before it gets banned.
 INVALID_SHARE_BAN_AT  = int(os.environ.get("INVALID_SHARE_BAN_AT", "25"))
 INVALID_SHARE_WARN_AT = int(os.environ.get("INVALID_SHARE_WARN_AT", "10"))
+# How long a wallet stays banned before auto-unbanning. The block-found
+# epoch transitions seem to cause honest miners to occasionally burst
+# invalid shares (right job_id, stale internal dataset state) -- a
+# self-healing ban is much friendlier than a permanent one that needs
+# operator intervention or pool restart. Cheaters that keep submitting
+# invalid shares just get re-banned in a few seconds.
+INVALID_SHARE_BAN_SEC = int(os.environ.get("INVALID_SHARE_BAN_SEC", "900"))  # 15 min
 # How many shares per wallet per second we'll accept (rate-limit spam).
 # At share_diff = network/1000 a single fast CPU does maybe 5-10 shares/s;
 # 60/s gives ridiculous headroom while still capping abuse.
@@ -282,7 +289,30 @@ def verify_share_against_job(job, nonce):
 
 # Per-wallet hardening state.
 _wallet_bans      = set()          # wallets we've banned for too many bad shares
+_wallet_ban_time  = {}             # wallet -> unix ts the ban was issued
 _wallet_bad_count = collections.defaultdict(int)
+
+
+def is_banned(wallet):
+    """Check ban with lazy auto-expiry. Must be called under _hard_lock.
+
+    Bans older than INVALID_SHARE_BAN_SEC are cleared on read -- the
+    wallet gets a fresh chance and a zeroed bad-count. Cheaters who
+    are still submitting bad shares will just hit the threshold and
+    re-ban within seconds; honest miners caught in a transient burst
+    can come back without operator intervention or a pool restart.
+    """
+    if wallet not in _wallet_bans:
+        return False
+    issued = _wallet_ban_time.get(wallet, 0)
+    if time.time() - issued >= INVALID_SHARE_BAN_SEC:
+        _wallet_bans.discard(wallet)
+        _wallet_ban_time.pop(wallet, None)
+        _wallet_bad_count[wallet] = 0
+        print(f"[pool] auto-unban {wallet[:12]}... after "
+              f"{INVALID_SHARE_BAN_SEC}s", file=sys.stderr)
+        return False
+    return True
 _wallet_last_acc  = {}             # wallet -> last accept timestamp (rate limit)
 _hard_lock        = threading.Lock()
 
@@ -700,7 +730,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         if not is_valid_wallet(wallet):
             return self._send_json(400, {"error": "invalid wallet address"})
         with _hard_lock:
-            if wallet in _wallet_bans:
+            if is_banned(wallet):
                 return self._send_json(403, {"error": "wallet banned for repeated invalid shares"})
         with STATE_LOCK:
             job = current_job
@@ -742,7 +772,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         # Hardening: check banlist + rate limit BEFORE doing PoW verify.
         now = time.time()
         with _hard_lock:
-            if wallet in _wallet_bans:
+            if is_banned(wallet):
                 with STATE_LOCK:
                     pool_stats["rejects_by_reason"]["banned"] += 1
                 return self._send_json(403, {"error": "wallet banned for repeated invalid shares"})
@@ -816,6 +846,7 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                           file=sys.stderr)
                 if bad >= INVALID_SHARE_BAN_AT:
                     _wallet_bans.add(wallet)
+                    _wallet_ban_time[wallet] = time.time()
                     print(f"[pool] BANNED {wallet[:12]}... after {bad} invalid shares. "
                           f"last info={vinfo}",
                           file=sys.stderr)
