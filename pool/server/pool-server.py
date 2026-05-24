@@ -74,6 +74,17 @@ BLOCKS_FILE           = os.environ.get(
 PAYOUTS_FILE          = os.environ.get(
     "PAYOUTS_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool-payouts.json"))
+# v1.1.13: per-wallet ledger adjustments. Positive entries add to a
+# wallet's pending balance; negative entries subtract. Used to absorb
+# historical operator-side losses (e.g. when a since-fixed bug caused
+# the pool to overpay other miners and the operator decides to take
+# the resulting wallet shortfall on their own books instead of
+# spreading it across future contributors). Format mirrors credits/
+# payouts so the same load helper works. Each entry should include a
+# human-readable `reason` field for audit purposes.
+ADJUSTMENTS_FILE      = os.environ.get(
+    "ADJUSTMENTS_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool-adjustments.json"))
 
 # Wallet-RPC for auto-payout (matches the faucet's setup pattern; this
 # is a SEPARATE wallet-rpc instance running on a different port from
@@ -883,6 +894,22 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
         pending = compute_pending_balances().get(wallet, 0)
         payload["pending_atomic"] = pending
         payload["pending_glac"]   = pending / 1e12
+        # v1.1.13: surface any operator adjustments transparently so
+        # anyone querying the API (or the page reading from it) can
+        # see why their effective pending differs from raw earned -
+        # paid. Empty list when no adjustments apply.
+        adjustments = load_json_file(ADJUSTMENTS_FILE, [])
+        wallet_adjustments = [
+            {
+                "ts":     a.get("ts"),
+                "atomic": a.get("atomic"),
+                "glac":   int(a.get("atomic", 0)) / 1e12,
+                "reason": a.get("reason", ""),
+            }
+            for a in adjustments
+            if a.get("wallet") == wallet
+        ]
+        payload["adjustments"] = wallet_adjustments
         self._send_json(200, payload)
 
     def _handle_blocks(self, qs):
@@ -975,11 +1002,19 @@ def save_json_atomic(path, data):
 
 
 def compute_pending_balances():
-    """Return {wallet: pending_atomic} based on credits minus payouts.
-    Reads both files fresh each call so an external editor (sweep job,
-    payout helper) can take effect without restart."""
-    credits = load_json_file(CREDITS_FILE, [])
-    payouts = load_json_file(PAYOUTS_FILE, [])
+    """Return {wallet: pending_atomic} based on credits minus payouts
+    plus adjustments. Reads files fresh each call so an external editor
+    can take effect without restart.
+
+    v1.1.13: adjustments file (ADJUSTMENTS_FILE) layers on top of the
+    credits/payouts arithmetic. A negative adjustment for a wallet
+    reduces what we owe them; a positive adjustment increases it.
+    Operator uses negative adjustments to absorb historical losses on
+    their own books instead of forcing future contributors to pay them
+    down through pro-rata pool dilution."""
+    credits     = load_json_file(CREDITS_FILE, [])
+    payouts     = load_json_file(PAYOUTS_FILE, [])
+    adjustments = load_json_file(ADJUSTMENTS_FILE, [])
     earned = {}
     for c in credits:
         w = c.get("wallet")
@@ -992,9 +1027,18 @@ def compute_pending_balances():
         if not w:
             continue
         paid[w] = paid.get(w, 0) + int(p.get("atomic", 0))
+    adj = {}
+    for a in adjustments:
+        w = a.get("wallet")
+        if not w:
+            continue
+        adj[w] = adj.get(w, 0) + int(a.get("atomic", 0))
+    # Build the full wallet set so an adjustment-only wallet (e.g. a
+    # negative-only operator absorption) still gets accounted for.
+    all_wallets = set(earned) | set(paid) | set(adj)
     pending = {}
-    for w, e in earned.items():
-        net = e - paid.get(w, 0)
+    for w in all_wallets:
+        net = earned.get(w, 0) - paid.get(w, 0) + adj.get(w, 0)
         if net > 0:
             pending[w] = net
     return pending
