@@ -183,14 +183,18 @@ int rime_wallet_synchronized(RimeWallet *tw) {
 unsigned long long rime_wallet_balance(RimeWallet *tw) {
   try {
     if (!tw || !tw->w) return 0;
-    return (unsigned long long)tw->w->balance(0);
+    // Sum across all subaddress accounts -- the Lattice Games launcher
+    // uses additional accounts as denomination buckets and the user's
+    // "balance" display should be their TOTAL spendable. For wallets
+    // with a single account (e.g. the miner apps), balanceAll == balance(0).
+    return (unsigned long long)tw->w->balanceAll();
   } catch (...) { return 0; }
 }
 
 unsigned long long rime_wallet_unlocked_balance(RimeWallet *tw) {
   try {
     if (!tw || !tw->w) return 0;
-    return (unsigned long long)tw->w->unlockedBalance(0);
+    return (unsigned long long)tw->w->unlockedBalanceAll();
   } catch (...) { return 0; }
 }
 
@@ -338,6 +342,164 @@ void rime_wallet_history(RimeWallet *tw, char *out, int cap) {
     if (s.empty()) s = "no sends or receives yet";
     copy_out(s, out, cap);
   } catch (...) {}
+}
+
+/* ---- subaddress accounts (denomination buckets) ---------------------- */
+
+unsigned int rime_wallet_account_count(RimeWallet *tw) {
+  try { if (tw && tw->w) return (unsigned int)tw->w->numSubaddressAccounts(); }
+  catch (...) {}
+  return 0;
+}
+
+int rime_wallet_account_create(RimeWallet *tw, const char *label) {
+  try {
+    if (!tw || !tw->w) return -1;
+    size_t before = tw->w->numSubaddressAccounts();
+    tw->w->addSubaddressAccount(label ? std::string(label) : std::string());
+    // wallet2 doesn't return the new index; it's appended so it's
+    // size_before. Refresh the account view so subsequent label /
+    // address queries see the new entry.
+    auto *acc = tw->w->subaddressAccount();
+    if (acc) acc->refresh();
+    return (int)before;
+  } catch (...) {}
+  return -1;
+}
+
+void rime_wallet_account_label(RimeWallet *tw, unsigned int idx,
+                                char *out, int cap) {
+  if (!out || cap <= 0) return;
+  out[0] = 0;
+  try {
+    if (!tw || !tw->w) return;
+    auto *acc = tw->w->subaddressAccount();
+    if (!acc) return;
+    acc->refresh();
+    auto rows = acc->getAll();
+    if (idx < rows.size() && rows[idx]) copy_out(rows[idx]->getLabel(), out, cap);
+  } catch (...) {}
+}
+
+void rime_wallet_account_address(RimeWallet *tw, unsigned int idx,
+                                  char *out, int cap) {
+  if (!out || cap <= 0) return;
+  out[0] = 0;
+  try {
+    if (!tw || !tw->w) return;
+    auto *acc = tw->w->subaddressAccount();
+    if (!acc) return;
+    acc->refresh();
+    auto rows = acc->getAll();
+    if (idx < rows.size() && rows[idx]) copy_out(rows[idx]->getAddress(), out, cap);
+  } catch (...) {}
+}
+
+unsigned long long rime_wallet_account_balance(RimeWallet *tw, unsigned int idx) {
+  try { if (tw && tw->w) return tw->w->balance(idx); } catch (...) {}
+  return 0;
+}
+
+unsigned long long rime_wallet_account_unlocked(RimeWallet *tw, unsigned int idx) {
+  try { if (tw && tw->w) return tw->w->unlockedBalance(idx); } catch (...) {}
+  return 0;
+}
+
+int rime_wallet_send_from(RimeWallet *tw, const char *address,
+                          unsigned long long amount_atomic,
+                          unsigned int account_idx,
+                          char *result, int result_cap) {
+  if (result && result_cap > 0) result[0] = 0;
+  try {
+    if (!tw || !tw->w)           { copy_out("wallet not open", result, result_cap); return 0; }
+    if (!address || !address[0]) { copy_out("enter a recipient address", result, result_cap); return 0; }
+    if (amount_atomic == 0)      { copy_out("enter an amount greater than 0", result, result_cap); return 0; }
+
+    PendingTransaction *pt = tw->w->createTransaction(
+        address, "", optional<uint64_t>((uint64_t)amount_atomic), 0,
+        PendingTransaction::Priority_Low,
+        account_idx, std::set<uint32_t>());
+    if (!pt) { copy_out("could not create transaction", result, result_cap); return 0; }
+
+    int ok = 0;
+    if (pt->status() != PendingTransaction::Status_Ok) {
+      copy_out("send failed: " + pt->errorString(), result, result_cap);
+    } else {
+      uint64_t amt = pt->amount(), fee = pt->fee();
+      if (!pt->commit()) {
+        copy_out("broadcast failed: " + pt->errorString(), result, result_cap);
+      } else {
+        char line[256];
+        std::snprintf(line, sizeof line, "sent %.6f GLAC  (fee %.6f)",
+                      (double)amt / 1e12, (double)fee / 1e12);
+        copy_out(line, result, result_cap);
+        ok = 1;
+      }
+    }
+    tw->w->disposeTransaction(pt);
+    return ok;
+  } catch (...) {
+    copy_out("send failed (internal error)", result, result_cap);
+    return 0;
+  }
+}
+
+int rime_wallet_send_multi(RimeWallet *tw,
+                           const char *const *addresses,
+                           const unsigned long long *amounts,
+                           unsigned long n_outputs,
+                           unsigned int source_account,
+                           char *result, int result_cap) {
+  if (result && result_cap > 0) result[0] = 0;
+  try {
+    if (!tw || !tw->w) { copy_out("wallet not open", result, result_cap); return 0; }
+    if (n_outputs == 0 || !addresses || !amounts) {
+      copy_out("no destinations", result, result_cap); return 0;
+    }
+
+    std::vector<std::string> addrs;
+    std::vector<uint64_t> amts;
+    addrs.reserve(n_outputs);
+    amts.reserve(n_outputs);
+    for (unsigned long i = 0; i < n_outputs; ++i) {
+      if (!addresses[i] || !addresses[i][0]) {
+        copy_out("empty destination address", result, result_cap); return 0;
+      }
+      if (amounts[i] == 0) {
+        copy_out("zero amount in multi-dest", result, result_cap); return 0;
+      }
+      addrs.push_back(std::string(addresses[i]));
+      amts.push_back((uint64_t)amounts[i]);
+    }
+
+    PendingTransaction *pt = tw->w->createTransactionMultDest(
+        addrs, "", optional<std::vector<uint64_t>>(amts), 0,
+        PendingTransaction::Priority_Low,
+        source_account, std::set<uint32_t>());
+    if (!pt) { copy_out("could not create transaction", result, result_cap); return 0; }
+
+    int ok = 0;
+    if (pt->status() != PendingTransaction::Status_Ok) {
+      copy_out("send failed: " + pt->errorString(), result, result_cap);
+    } else {
+      uint64_t amt = pt->amount(), fee = pt->fee();
+      if (!pt->commit()) {
+        copy_out("broadcast failed: " + pt->errorString(), result, result_cap);
+      } else {
+        char line[256];
+        std::snprintf(line, sizeof line,
+                      "sent %.6f GLAC across %lu outputs  (fee %.6f)",
+                      (double)amt / 1e12, n_outputs, (double)fee / 1e12);
+        copy_out(line, result, result_cap);
+        ok = 1;
+      }
+    }
+    tw->w->disposeTransaction(pt);
+    return ok;
+  } catch (...) {
+    copy_out("send failed (internal error)", result, result_cap);
+    return 0;
+  }
 }
 
 }  /* extern "C" */

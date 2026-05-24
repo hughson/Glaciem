@@ -65,6 +65,52 @@ int rime_wallet_send(RimeWallet *w, const char *address,
                        unsigned long long amount_atomic,
                        char *result, int result_cap);
 
+/* ---- subaddress accounts (denomination buckets) ----------------------- */
+/* Monero supports multiple "subaddress accounts" inside one wallet, each
+   with its own balance/unlocked-balance and its own primary address.
+   The Lattice Games launcher uses these as denomination buckets to
+   keep purchases from locking the whole wallet (when you spend from
+   one bucket, the other buckets stay unaffected; only the source
+   bucket's change locks for the standard 10-block window).
+
+   Existing send (rime_wallet_send) operates on account 0; the
+   "_from" variant accepts an account index. */
+
+/* Total number of subaddress accounts (includes account 0). */
+unsigned int rime_wallet_account_count(RimeWallet *w);
+
+/* Append a new subaddress account at the end with the given label.
+   Returns the new account's index, or -1 on error. */
+int rime_wallet_account_create(RimeWallet *w, const char *label);
+
+/* Copy the label / primary-address of account `idx` into `out`. */
+void rime_wallet_account_label(RimeWallet *w, unsigned int idx, char *out, int cap);
+void rime_wallet_account_address(RimeWallet *w, unsigned int idx, char *out, int cap);
+
+/* Per-account balance / unlocked balance in atomic units. */
+unsigned long long rime_wallet_account_balance(RimeWallet *w, unsigned int idx);
+unsigned long long rime_wallet_account_unlocked(RimeWallet *w, unsigned int idx);
+
+/* Send from a specific subaddress account. Same semantics as
+   rime_wallet_send otherwise. */
+int rime_wallet_send_from(RimeWallet *w, const char *address,
+                          unsigned long long amount_atomic,
+                          unsigned int account_idx,
+                          char *result, int result_cap);
+
+/* Multi-destination send: pay several outputs in a single tx, drawing
+   inputs from `source_account`. Used by the launcher's opportunistic
+   denomination splitter -- a single purchase tx can ALSO seed the
+   wallet's denom buckets (one merchant output + several self-sends).
+   `addresses` and `amounts` are parallel arrays of length `n_outputs`.
+   Returns 1 on success, 0 on failure. */
+int rime_wallet_send_multi(RimeWallet *w,
+                           const char *const *addresses,
+                           const unsigned long long *amounts,
+                           unsigned long n_outputs,
+                           unsigned int source_account,
+                           char *result, int result_cap);
+
 /* Sweep "unmixable" outputs into normal mixable ones. On a young chain almost
    all mined (coinbase) rewards are unmixable -- they have cleartext amounts and
    there are not yet enough same-denomination outputs on-chain to form a ring,
