@@ -1006,27 +1006,59 @@ def compute_pending_balances():
     plus adjustments. Reads files fresh each call so an external editor
     can take effect without restart.
 
-    v1.1.13: adjustments file (ADJUSTMENTS_FILE) layers on top of the
-    credits/payouts arithmetic. A negative adjustment for a wallet
-    reduces what we owe them; a positive adjustment increases it.
-    Operator uses negative adjustments to absorb historical losses on
-    their own books instead of forcing future contributors to pay them
-    down through pro-rata pool dilution."""
+    v1.1.13a: only credits whose coinbase has actually landed in the
+    pool wallet are counted toward pending. This guarantees the strict
+    invariant that pending <= wallet balance for every wallet, at all
+    times -- even during the brief window between a submit_block OK
+    and the wallet's next scan. Recently-credited blocks that haven't
+    yet shown up as wallet incoming are deferred until they do, then
+    automatically counted on the next /pool/miner query.
+
+    Adjustments still apply unconditionally (they're not tied to a
+    block height -- they're operator-recorded ledger corrections).
+    Payouts also count unconditionally (they're already a tx that
+    actually happened)."""
     credits     = load_json_file(CREDITS_FILE, [])
     payouts     = load_json_file(PAYOUTS_FILE, [])
     adjustments = load_json_file(ADJUSTMENTS_FILE, [])
+
+    # Snapshot the arrived-heights cache. If it's empty (e.g. on the
+    # very first request after startup, before the maturity loop has
+    # had a chance to run), fall back to counting all credits -- worse
+    # to show pending=0 to everyone for 30 seconds than to briefly
+    # exceed wallet by one block's worth.
+    with _arrived_heights_lock:
+        arrived = frozenset(_arrived_heights)
+        have_arrived_data = _arrived_heights_ts > 0
+
     earned = {}
     for c in credits:
         w = c.get("wallet")
         if not w:
             continue
+        if have_arrived_data:
+            h = int(c.get("height", 0))
+            if h not in arrived:
+                # Block's coinbase hasn't been scanned into the wallet
+                # yet. Defer the credit so pending never exceeds wallet.
+                continue
         earned[w] = earned.get(w, 0) + int(c.get("atomic", 0))
     paid = {}
     for p in payouts:
         w = p.get("wallet")
         if not w:
             continue
-        paid[w] = paid.get(w, 0) + int(p.get("atomic", 0))
+        # v1.1.13a: each payout deducts the recipient's amount AND their
+        # share of the transaction fee from their pending. Otherwise the
+        # fee comes out of the pool wallet but no one's pending reflects
+        # it -- creating a slow drift where pending exceeds the wallet
+        # balance by exactly the cumulative fees. round_fee_share has
+        # been recorded on every payout since v1.1.9; fall back to the
+        # full tx_fee_atomic on any older entry to be safe.
+        amount = int(p.get("atomic", 0))
+        fee    = int(p.get("round_fee_share",
+                          p.get("tx_fee_atomic", 0)))
+        paid[w] = paid.get(w, 0) + amount + fee
     adj = {}
     for a in adjustments:
         w = a.get("wallet")
@@ -1230,6 +1262,16 @@ def cold_sweep_loop():
 # this, users see "pending 175 GLAC" and conclude the pool is broken.
 # We poll the wallet every MATURITY_REFRESH_S and cache the answer.
 
+# v1.1.13: arrived-heights cache. Populated alongside the maturity
+# poll. compute_pending_balances() consults it so we never credit a
+# block toward a wallet's pending balance until the pool wallet has
+# actually received the coinbase. Guarantees pending <= wallet for
+# every wallet, at all times, even between submit_block OK and the
+# next wallet scan (~30s window without this cache).
+_arrived_heights: set = set()
+_arrived_heights_lock = threading.Lock()
+_arrived_heights_ts: float = 0.0
+
 _maturity_cache = {
     "ts":                       0.0,   # when we last refreshed
     "balance_atomic":           None,  # int or None if never fetched
@@ -1267,6 +1309,23 @@ def maturity_refresh_once():
             _maturity_cache["unspent_outputs"]        = outputs
     except Exception as e:
         print(f"[pool] maturity refresh parse failed: {e}", file=sys.stderr)
+    # v1.1.13: also refresh the arrived-heights cache used by
+    # compute_pending_balances to guarantee pending <= wallet at all
+    # times. We treat a credit as eligible for pending only if the
+    # corresponding coinbase has actually been seen by the wallet --
+    # so the ~1-block window between submit_block returning OK and
+    # the wallet's scan picking up the incoming no longer makes
+    # pending temporarily exceed wallet.
+    try:
+        ins = wallet_rpc("get_transfers", {"in": True, "pool": False}, timeout=15)
+        heights = {int(t.get("height", 0)) for t in (ins.get("in") or [])}
+        with _arrived_heights_lock:
+            global _arrived_heights_ts
+            _arrived_heights.clear()
+            _arrived_heights.update(heights)
+            _arrived_heights_ts = time.time()
+    except Exception as e:
+        print(f"[pool] arrived-heights refresh failed: {e}", file=sys.stderr)
 
 
 def maturity_loop():
@@ -1472,6 +1531,18 @@ def main():
     # Prime the job once before opening the listener so the first
     # /pool/job request doesn't 503.
     refresh_job()
+
+    # v1.1.13: prime the arrived-heights cache synchronously so the very
+    # first /pool/miner request applies the pending <= wallet invariant
+    # instead of falling back to "count all credits".
+    try:
+        maturity_refresh_once()
+        with _arrived_heights_lock:
+            n_arrived = len(_arrived_heights)
+        print(f"[pool] arrived-heights cache primed with {n_arrived} entries")
+    except Exception as e:
+        print(f"[pool] WARNING: could not prime arrived-heights cache: {e}",
+              file=sys.stderr)
 
     refresher = threading.Thread(target=refresh_loop, name="refresh", daemon=True)
     refresher.start()
