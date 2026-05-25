@@ -226,6 +226,17 @@ void rime_wallet_seed(RimeWallet *tw, char *out, int cap) {
   } catch (...) {}
 }
 
+int rime_wallet_secret_spend_key(RimeWallet *tw, char *out, int cap) {
+  if (out && cap > 0) out[0] = 0;
+  try {
+    if (!tw || !tw->w) return 0;
+    std::string hex = tw->w->secretSpendKey();
+    if (hex.size() != 64) return 0;
+    copy_out(hex, out, cap);
+    return 1;
+  } catch (...) { return 0; }
+}
+
 int rime_wallet_send(RimeWallet *tw, const char *address,
                        unsigned long long amount_atomic,
                        char *result, int result_cap) {

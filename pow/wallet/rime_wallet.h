@@ -59,6 +59,14 @@ unsigned long long rime_wallet_daemon_height(RimeWallet *w);      /* node chain 
 void rime_wallet_address(RimeWallet *w, char *out, int cap);
 void rime_wallet_seed(RimeWallet *w, char *out, int cap);
 
+/* Copy the wallet's secret spend key as 64 lowercase hex chars + NUL.
+ * SENSITIVE -- the caller must treat this as a secret. Used by the
+ * Lattice Games launcher to derive a deterministic per-wallet auth
+ * keypair (HMAC + ed25519) so the store-side identity stays stable
+ * across machines after a seed restore.
+ * Returns 1 on success, 0 on failure (in which case `out` is undefined). */
+int rime_wallet_secret_spend_key(RimeWallet *w, char *out, int cap);
+
 /* Send `amount_atomic` to `address`. Writes a human-readable result line into
    `result`. Returns 1 on success, 0 on failure. */
 int rime_wallet_send(RimeWallet *w, const char *address,
