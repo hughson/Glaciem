@@ -85,6 +85,20 @@ PAYOUTS_FILE          = os.environ.get(
 ADJUSTMENTS_FILE      = os.environ.get(
     "ADJUSTMENTS_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool-adjustments.json"))
+# v1.1.13: growth-fund sponsorship. Operator pre-funds the pool wallet
+# with a stated amount of GLAC; for each block the pool finds while
+# the fund is active, an extra per-block bonus is added to the round's
+# distributable amount BEFORE the per-miner pro-rata calculation. The
+# bonus comes out of the pre-funded balance until it drains.
+#
+# State (pool-sponsorship.json) is written by the admin fund_sponsorship
+# script, mutated by settle_round() each time a bonus is consumed.
+# Shape:
+#   { active: bool, label: str, total_atomic, remaining_atomic,
+#     per_block_atomic, blocks_seeded, blocks_used, started_at, ended_at? }
+SPONSORSHIP_FILE      = os.environ.get(
+    "SPONSORSHIP_FILE",
+    os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool-sponsorship.json"))
 
 # Wallet-RPC for auto-payout (matches the faucet's setup pattern; this
 # is a SEPARATE wallet-rpc instance running on a different port from
@@ -582,6 +596,61 @@ def submit_block(job, nonce, finder_wallet):
         return {"accepted": True, "block": False, "reason": str(e)}
 
 
+# v1.1.13: growth-fund sponsorship state lock. The sponsorship file
+# (pool-sponsorship.json) is mutated atomically inside this lock by
+# settle_round() each time a bonus is consumed.
+_sponsorship_lock = threading.Lock()
+
+
+def sponsorship_consume_block():
+    """Atomically consume one block's worth of growth-fund bonus.
+    Returns the atomic amount to add to this block's distributable
+    reward, or 0 if no sponsorship is active / drained. Updates the
+    on-disk state file."""
+    with _sponsorship_lock:
+        state = load_json_file(SPONSORSHIP_FILE, None)
+        if not state or not state.get("active"):
+            return 0
+        per_block = int(state.get("per_block_atomic", 0))
+        remaining = int(state.get("remaining_atomic", 0))
+        if per_block <= 0 or remaining <= 0:
+            return 0
+        # Final block may have less than a full per-block bonus left.
+        bonus = min(per_block, remaining)
+        state["remaining_atomic"] = remaining - bonus
+        state["blocks_used"]      = int(state.get("blocks_used", 0)) + 1
+        if state["remaining_atomic"] <= 0:
+            state["active"]    = False
+            state["ended_at"]  = int(time.time())
+        save_json_atomic(SPONSORSHIP_FILE, state)
+        return bonus
+
+
+def sponsorship_snapshot():
+    """Read-only snapshot of the sponsorship state for /pool/stats.
+    Returns None when no sponsorship has ever been activated."""
+    state = load_json_file(SPONSORSHIP_FILE, None)
+    if not state:
+        return None
+    remaining = int(state.get("remaining_atomic", 0))
+    per_block = int(state.get("per_block_atomic", 0))
+    return {
+        "active":               bool(state.get("active")),
+        "label":                state.get("label", ""),
+        "total_atomic":         int(state.get("total_atomic", 0)),
+        "total_glac":           int(state.get("total_atomic", 0)) / 1e12,
+        "remaining_atomic":     remaining,
+        "remaining_glac":       remaining / 1e12,
+        "per_block_atomic":     per_block,
+        "per_block_glac":       per_block / 1e12,
+        "blocks_seeded":        int(state.get("blocks_seeded", 0)),
+        "blocks_used":          int(state.get("blocks_used", 0)),
+        "blocks_remaining_est": (remaining // per_block) if per_block > 0 else 0,
+        "started_at":           state.get("started_at"),
+        "ended_at":             state.get("ended_at"),
+    }
+
+
 def settle_round(block):
     """Append credit entries per contributing miner. The payout helper
     reads this file, sums per wallet, and submits actual transfers from
@@ -591,6 +660,16 @@ def settle_round(block):
         return
     pool_cut = int(reward * POOL_FEE_PERCENT / 100.0)
     distributable = reward - pool_cut
+
+    # v1.1.13: top up with growth-fund sponsorship bonus if active.
+    # The bonus comes from the pre-funded balance the operator put into
+    # the pool wallet; it is added to `distributable` BEFORE the
+    # per-miner pro-rata calculation so every contributor benefits in
+    # proportion to their share contribution this round.
+    bonus_atomic = sponsorship_consume_block()
+    if bonus_atomic > 0:
+        distributable += bonus_atomic
+
     total_shares = block.get("round_shares") or 0
     if total_shares <= 0:
         return
@@ -607,6 +686,9 @@ def settle_round(block):
                 "atomic":        credit,
                 "shares":        s["shares_this_round"],
                 "round_shares":  total_shares,
+                # Tag the entry with the sponsorship bonus that was
+                # rolled into this block's distributable (for audit).
+                "sponsorship_atomic": bonus_atomic,
             })
     if entries:
         append_credits(entries)
@@ -927,6 +1009,10 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                 # v1.1.13: orphan-double-credit guard count. Non-zero
                 # is healthy and expected on a multi-miner pool.
                 "orphan_dedupes":       pool_stats["orphan_dedupes"],
+                # v1.1.13: growth-fund sponsorship state. Null when no
+                # sponsorship has ever been active. Page reads this to
+                # show "Growth fund: +X GLAC/block, Y blocks remaining".
+                "sponsorship":          sponsorship_snapshot(),
             }
         self._send_json(200, payload)
 

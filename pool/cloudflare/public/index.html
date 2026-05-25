@@ -127,6 +127,20 @@ footer{border-top:1px solid var(--line);padding:22px 0;text-align:center;color:v
     </div>
   </section>
 
+  <section id="sponsorship-section" style="display:none;">
+    <h2>GROWTH FUND</h2>
+    <div class="warning" id="sponsorship-card">
+      <div id="spons-summary">loading…</div>
+      <div class="dim small" style="margin-top:8px;">
+        While the growth fund is active, every pool-found block pays out
+        an extra bonus on top of the standard chain reward, distributed
+        proportionally by share contribution. The bonus comes from a
+        pre-funded balance, not from anyone else's mining. Once the fund
+        drains, payouts return to normal block reward.
+      </div>
+    </div>
+  </section>
+
   <section id="maturity-section" style="display:none;">
     <h2>PAYOUT MATURITY</h2>
     <div class="warning" id="maturity-card">
@@ -244,6 +258,36 @@ async function fetchStats() {
       ? "<strong>Cold sweep: ON.</strong> The pool's hot wallet auto-transfers accumulated balance to an offline cold wallet on a timer. If this VM is compromised, an attacker only gets ~one sweep window's worth of rewards."
       : "<strong>Cold sweep: OFF.</strong> Block rewards accumulate on the pool VM indefinitely. Operator should configure a COLD_ADDRESS before significant balance builds up.";
     $("sec-bans").innerHTML = `<span class="dim">Banned wallets today: <span class="mono accent">${d.banned_wallets_today ?? 0}</span> (auto-banned after 10 invalid shares).</span>`;
+
+    // ---- growth-fund sponsorship ----
+    // Backend exposes d.sponsorship when one has been activated. While
+    // it's active we show a card with the bonus per block and the
+    // remaining size; when it drains the card switches to a "fund
+    // depleted" mode for a few hours before being hidden completely.
+    const sp = d.sponsorship;
+    const sponsSect = $("sponsorship-section");
+    if (!sp) {
+      sponsSect.style.display = "none";
+    } else if (sp.active && sp.remaining_atomic > 0) {
+      sponsSect.style.display = "";
+      const bonus = (sp.per_block_glac ?? 0).toLocaleString("en-US", {maximumFractionDigits: 4});
+      const remain = (sp.remaining_glac ?? 0).toLocaleString("en-US", {maximumFractionDigits: 2});
+      const blocksLeft = sp.blocks_remaining_est ?? 0;
+      $("spons-summary").innerHTML =
+        `<strong>Growth fund active.</strong> ` +
+        `Bonus per block: <span class="mono accent">+${bonus} GLAC</span> ` +
+        `<span class="dim">on top of the standard ~35 GLAC reward.</span><br>` +
+        `Remaining in fund: <span class="mono">${remain} GLAC</span> ` +
+        `<span class="dim">(~${blocksLeft.toLocaleString()} more bonus blocks).</span>` +
+        (sp.label ? `<br><span class="dim small">${esc(sp.label)}</span>` : "");
+    } else {
+      sponsSect.style.display = "";
+      $("spons-summary").innerHTML =
+        `<strong>Growth fund depleted.</strong> Payouts have returned to ` +
+        `standard block reward. Total seeded: <span class="mono">` +
+        `${(sp.total_glac ?? 0).toFixed(2)} GLAC</span> across ` +
+        `${(sp.blocks_used ?? 0).toLocaleString()} blocks.`;
+    }
 
     // ---- payout maturity ----
     // Backend exposes d.maturity once the wallet polls have completed.
