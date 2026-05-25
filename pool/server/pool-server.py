@@ -169,6 +169,15 @@ COLD_SWEEP_INTERVAL_S  = int(os.environ.get("COLD_SWEEP_INTERVAL_S", "3600"))  #
 # users when their next payout chunk unlocks instead of leaving them
 # wondering why "pending X GLAC" doesn't translate to a transfer.
 MATURITY_REFRESH_S     = int(os.environ.get("MATURITY_REFRESH_S", "30"))
+# v1.1.13: how many chain confirmations a credit's underlying block must
+# have before it counts toward a wallet's pending balance. With the
+# default of 60 (= Monero coinbase lock), the credit ledger pays out
+# in lockstep with when the actual coinbase output unlocks in the pool
+# wallet -- making it impossible for the pool to overpay for a block
+# that ends up orphaned, regardless of how much unlocked liquidity
+# happens to be sitting in the wallet at the time. Setting lower
+# (e.g. 10) trades a small orphan risk for faster payouts.
+SETTLEMENT_DEPTH       = int(os.environ.get("SETTLEMENT_DEPTH", "60"))
 # Rime block target (matches src/cryptonote_config.h DIFFICULTY_TARGET_V2).
 BLOCK_TIME_S           = int(os.environ.get("BLOCK_TIME_S", "120"))
 
@@ -1156,13 +1165,14 @@ def compute_pending_balances():
     plus adjustments. Reads files fresh each call so an external editor
     can take effect without restart.
 
-    v1.1.13a: only credits whose coinbase has actually landed in the
-    pool wallet are counted toward pending. This guarantees the strict
-    invariant that pending <= wallet balance for every wallet, at all
-    times -- even during the brief window between a submit_block OK
-    and the wallet's next scan. Recently-credited blocks that haven't
-    yet shown up as wallet incoming are deferred until they do, then
-    automatically counted on the next /pool/miner query.
+    v1.1.13b: only credits whose underlying block is at least
+    SETTLEMENT_DEPTH confirmations deep are counted toward pending.
+    Past that depth a reorg is effectively impossible, so paying
+    against the credit can never end up overpaying for an orphaned
+    block -- regardless of how much unlocked liquidity happens to be
+    sitting in the pool wallet at the time. Freshly-credited blocks
+    are deferred until they age in; they automatically count on the
+    next /pool/miner query.
 
     Adjustments still apply unconditionally (they're not tied to a
     block height -- they're operator-recorded ledger corrections).
@@ -1459,23 +1469,35 @@ def maturity_refresh_once():
             _maturity_cache["unspent_outputs"]        = outputs
     except Exception as e:
         print(f"[pool] maturity refresh parse failed: {e}", file=sys.stderr)
-    # v1.1.13: also refresh the arrived-heights cache used by
-    # compute_pending_balances to guarantee pending <= wallet at all
-    # times. We treat a credit as eligible for pending only if the
-    # corresponding coinbase has actually been seen by the wallet --
-    # so the ~1-block window between submit_block returning OK and
-    # the wallet's scan picking up the incoming no longer makes
-    # pending temporarily exceed wallet.
+    # v1.1.13: refresh the mature-heights cache used by
+    # compute_pending_balances. A height is only included if its block
+    # is at least SETTLEMENT_DEPTH confirmations deep in the chain --
+    # past that depth a reorg is effectively impossible, so paying out
+    # against the credit can never end up overpaying for an orphaned
+    # block.
+    #
+    # The 25K growth-fund transfer provides unlocked liquidity in the
+    # pool wallet, which without this gate would allow the payout loop
+    # to fire on fresh (still-locked, still-orphan-risky) block rewards
+    # by drawing from the transfer pile instead of waiting for the new
+    # coinbase to mature. With this gate, payouts naturally synchronize
+    # with the underlying coinbase becoming spendable.
     try:
         ins = wallet_rpc("get_transfers", {"in": True, "pool": False}, timeout=15)
-        heights = {int(t.get("height", 0)) for t in (ins.get("in") or [])}
+        wh_resp = wallet_rpc("get_height", timeout=5)
+        wallet_height = int(wh_resp.get("height", 0))
+        mature_heights = set()
+        for t in (ins.get("in") or []):
+            h = int(t.get("height", 0))
+            if h > 0 and wallet_height - h >= SETTLEMENT_DEPTH:
+                mature_heights.add(h)
         with _arrived_heights_lock:
             global _arrived_heights_ts
             _arrived_heights.clear()
-            _arrived_heights.update(heights)
+            _arrived_heights.update(mature_heights)
             _arrived_heights_ts = time.time()
     except Exception as e:
-        print(f"[pool] arrived-heights refresh failed: {e}", file=sys.stderr)
+        print(f"[pool] mature-heights refresh failed: {e}", file=sys.stderr)
 
 
 def maturity_loop():
