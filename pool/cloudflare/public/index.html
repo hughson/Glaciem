@@ -344,14 +344,26 @@ async function fetchBlocks() {
       tbody.innerHTML = `<tr><td colspan="4" class="dim">no blocks found by the pool yet</td></tr>`;
       return;
     }
-    tbody.innerHTML = d.blocks.map(b => `
+    tbody.innerHTML = d.blocks.map(b => {
+      // When the growth fund pays out a bonus, show "reward + bonus =
+      // total paid". Without a bonus, show just the chain reward.
+      const reward = b.reward_atomic || 0;
+      const bonus  = b.sponsorship_atomic || 0;
+      const total  = b.total_paid_atomic || (reward + bonus);
+      const rewardCell = bonus > 0
+        ? `<span class="mono">${esc(fmtGlac(total))}</span>` +
+          ` <span class="dim small">(${esc(fmtGlac(reward))} + ` +
+          `<span class="accent">${esc(fmtGlac(bonus))} bonus</span>)</span>`
+        : esc(fmtGlac(reward));
+      return `
       <tr>
         <td><a class="link" href="https://glaciem-explorer.frostmine.workers.dev/block/${b.height}">${esc(String(b.height))}</a></td>
         <td>${esc(fmtAge(b.ts))}</td>
         <td><span class="hash">${esc(shortHash(b.finder))}</span></td>
-        <td class="right">${esc(fmtGlac(b.reward_atomic || 0))}</td>
+        <td class="right">${rewardCell}</td>
       </tr>
-    `).join("");
+      `;
+    }).join("");
   } catch (e) {
     console.warn("blocks fetch failed:", e);
   }

@@ -669,6 +669,13 @@ def settle_round(block):
     bonus_atomic = sponsorship_consume_block()
     if bonus_atomic > 0:
         distributable += bonus_atomic
+        # Stamp the block record itself so the recent-blocks table
+        # (read from pool-blocks.json) can display reward + bonus =
+        # total paid out, not just the chain coinbase. settle_round
+        # runs while append_block hasn't yet been called, so this
+        # mutation propagates straight into the persisted block row.
+        block["sponsorship_atomic"]   = bonus_atomic
+        block["total_paid_atomic"]    = reward + bonus_atomic
 
     total_shares = block.get("round_shares") or 0
     if total_shares <= 0:
