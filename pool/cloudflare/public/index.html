@@ -385,11 +385,18 @@ async function lookupMiner() {
       <div class="miner-result">
         <div class="m"><div class="l">HASHRATE</div><div class="v accent">${fmtRate(d.hashrate || 0)}</div></div>
         <div class="m"><div class="l">PENDING PAYOUT</div><div class="v accent">${fmtGlac(d.pending_atomic || 0)}</div></div>
+        <div class="m"><div class="l">MATURING</div><div class="v">${fmtGlac(d.maturing_atomic || 0)}</div></div>
         <div class="m"><div class="l">SHARES TODAY</div><div class="v">${(d.shares_today||0).toLocaleString()}</div></div>
         <div class="m"><div class="l">SHARES TOTAL</div><div class="v">${(d.shares_total||0).toLocaleString()}</div></div>
         <div class="m"><div class="l">THIS ROUND</div><div class="v">${(d.shares_this_round||0).toLocaleString()}</div></div>
         <div class="m"><div class="l">BLOCKS FOUND</div><div class="v">${d.blocks_found||0}</div></div>
         <div class="m"><div class="l">LAST SHARE</div><div class="v">${d.last_share_s_ago === null ? "—" : (d.last_share_s_ago + "s ago")}</div></div>
+      </div>
+      <div class="dim small" style="margin-top:10px;">
+        <strong>Pending payout</strong> is what's ready to send to your wallet on the next payout round.
+        <strong>Maturing</strong> is GLAC you've earned from recently-found blocks that's still waiting for
+        60 confirmations before the pool will pay it (Monero coinbase rule; protects against paying out for
+        blocks that get orphaned). It'll move from Maturing to Pending automatically.
       </div>
     `;
   } catch (e) {

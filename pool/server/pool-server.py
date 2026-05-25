@@ -1050,9 +1050,19 @@ class PoolHandler(http.server.BaseHTTPRequestHandler):
                 "blocks_found":      s["blocks_found"],
             }
         # Pending payout balance: read fresh (cheap, JSON file).
-        pending = compute_pending_balances().get(wallet, 0)
-        payload["pending_atomic"] = pending
-        payload["pending_glac"]   = pending / 1e12
+        pending  = compute_pending_balances().get(wallet, 0)
+        maturing = compute_maturing_balances().get(wallet, 0)
+        payload["pending_atomic"]  = pending
+        payload["pending_glac"]    = pending / 1e12
+        # v1.1.13: maturing = credits earned but not yet at
+        # SETTLEMENT_DEPTH confs deep. Lets the page show "you've
+        # earned X, of which Y is in the maturity window and Z is
+        # ready to pay out next round." Without this users see
+        # pending=0 between block-find and 60-conf maturity and
+        # think they're not getting credited.
+        payload["maturing_atomic"] = maturing
+        payload["maturing_glac"]   = maturing / 1e12
+        payload["unpaid_total_glac"] = (pending + maturing) / 1e12
         # v1.1.13: surface any operator adjustments transparently so
         # anyone querying the API (or the page reading from it) can
         # see why their effective pending differs from raw earned -
@@ -1234,6 +1244,33 @@ def compute_pending_balances():
         if net > 0:
             pending[w] = net
     return pending
+
+
+def compute_maturing_balances():
+    """Return {wallet: atomic} of credits the user has earned but whose
+    underlying block is not yet at SETTLEMENT_DEPTH confirmations -- i.e.
+    rewards in the maturity window that the payout loop is deferring
+    until they're safe from orphan reorgs. This is "what's earned but
+    not yet payable", complementary to compute_pending_balances() which
+    is "what's earned AND safe enough to pay right now"."""
+    credits = load_json_file(CREDITS_FILE, [])
+    with _arrived_heights_lock:
+        arrived = frozenset(_arrived_heights)
+        have_data = _arrived_heights_ts > 0
+    maturing = {}
+    if not have_data:
+        # Without maturity data we can't classify -- treat everything
+        # as immediately pending (matches compute_pending_balances).
+        return maturing
+    for c in credits:
+        w = c.get("wallet")
+        if not w:
+            continue
+        h = int(c.get("height", 0))
+        if h in arrived:
+            continue   # past settlement depth, counted as pending
+        maturing[w] = maturing.get(w, 0) + int(c.get("atomic", 0))
+    return maturing
 
 
 def payout_round():
