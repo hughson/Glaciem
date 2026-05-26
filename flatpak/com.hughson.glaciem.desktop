@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Glaciem Miner
+GenericName=CPU Miner & Wallet
+Comment=Lattice CPU miner with built-in Glaciem wallet
+Exec=glaciem-miner
+Icon=com.hughson.glaciem
+Terminal=false
+Categories=Network;Finance;
+Keywords=mining;miner;crypto;cryptocurrency;wallet;glaciem;monero;lattice;cpu;
+StartupNotify=true

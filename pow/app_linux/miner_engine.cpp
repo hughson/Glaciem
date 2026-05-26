@@ -270,9 +270,13 @@ private:
 };
 
 void WorkerThread::run() {
-    int cores = (int)std::thread::hardware_concurrency();
+    // v1.1.14+: re-read m_threadCount at the top of every batch (inside the
+    // while loop below) so a settings change takes effect within ~1 batch
+    // without restarting the miner. m_maxCores is the upper bound (set in
+    // ctor from std::thread::hardware_concurrency, capped at 16).
+    int cores = m_e->m_threadCount.load();
     if (cores < 1) cores = 1;
-    if (cores > 16) cores = 16;
+    if (cores > m_e->m_maxCores) cores = m_e->m_maxCores;
 
     std::vector<uint64_t> ds(DATASET_WORDS);
     uint8_t curSeed[32] = {0};
@@ -300,6 +304,14 @@ void WorkerThread::run() {
     constexpr int LINUX_CONSECUTIVE_INVALID_THRESHOLD = 3;
 
     while (!m_stop) {
+        // v1.1.14+: pick up Settings-dialog changes to the thread-count
+        // picker without restarting the miner. Atomic load -- no lock.
+        {
+            int t = m_e->m_threadCount.load();
+            if (t < 1) t = 1;
+            if (t > m_e->m_maxCores) t = m_e->m_maxCores;
+            cores = t;
+        }
         if (consecutiveInvalid >= LINUX_CONSECUTIVE_INVALID_THRESHOLD) {
             // Drop cached dataset so the next iteration rebuilds it
             // against whatever seed_hash the fresh job carries.
@@ -657,6 +669,16 @@ void WalletPollThread::run() {
 MinerEngine::MinerEngine(QObject *parent) : QObject(parent) {
     curl_global_init(CURL_GLOBAL_DEFAULT);
 
+    // v1.1.14+: detect physical cores once so the QML spinner can clamp + so
+    // the default thread count is sensible before loadSettings overrides it.
+    {
+        int hw = (int)std::thread::hardware_concurrency();
+        if (hw < 1) hw = 1;
+        if (hw > 16) hw = 16;     // matches WorkerThread::run's old hard cap
+        m_maxCores = hw;
+        m_threadCount.store((m_maxCores + 1) / 2);
+    }
+
     loadSettings();
 
     m_poll = new WalletPollThread(this);
@@ -716,8 +738,18 @@ bool MinerEngine::hasWallet() const {
 }
 
 QString MinerEngine::device() const {
-    int n = (int)std::thread::hardware_concurrency();
-    return QStringLiteral("CPU - %1 threads").arg(n);
+    return QStringLiteral("CPU - %1 threads").arg(m_maxCores);
+}
+
+int MinerEngine::threadCount() const { return m_threadCount.load(); }
+int MinerEngine::maxCores()    const { return m_maxCores; }
+
+void MinerEngine::setThreadCount(int n) {
+    if (n < 1) n = 1;
+    if (n > m_maxCores) n = m_maxCores;
+    if (m_threadCount.exchange(n) == n) return;
+    saveSettings();
+    emit threadCountChanged();
 }
 
 void MinerEngine::setNodeHost(const QString &host) {
@@ -888,6 +920,15 @@ void MinerEngine::loadSettings() {
     m_poolEnabled = s.value("poolEnabled", false).toBool();
     m_poolUrl     = s.value("poolUrl",
         QStringLiteral("https://glaciem-pool.frostmine.workers.dev")).toString();
+    // v1.1.14+: thread count picker. Default to the recommended value (half
+    // the cores) set in the ctor. Clamp aggressively in case prefs were
+    // written from a build with a different m_maxCores.
+    {
+        int n = s.value("threadCount", (m_maxCores + 1) / 2).toInt();
+        if (n < 1) n = 1;
+        if (n > m_maxCores) n = m_maxCores;
+        m_threadCount.store(n);
+    }
 }
 
 void MinerEngine::saveSettings() {
@@ -896,6 +937,7 @@ void MinerEngine::saveSettings() {
     s.setValue("nodePort", m_nodePort);
     s.setValue("poolEnabled", m_poolEnabled);
     s.setValue("poolUrl",     m_poolUrl);
+    s.setValue("threadCount", m_threadCount.load());
 }
 
 void MinerEngine::tick() { emit statsChanged(); }

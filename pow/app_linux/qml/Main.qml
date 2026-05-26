@@ -477,11 +477,15 @@ Window {
         title: "SETTINGS"
         property alias hostText: hostField.text
         property alias portText: portField.text
+        // v1.1.14+: local thread-count buffer so the Settings dialog can show
+        // the user's tentative pick before they hit SAVE.
+        property int pendingThreads: 1
         onAboutToShow: {
             hostField.text = MinerEngine.nodeHost
             portField.text = MinerEngine.nodePort
             poolToggle.checked = MinerEngine.poolEnabled
             poolUrlField.text = MinerEngine.poolUrl
+            settingsDialog.pendingThreads = MinerEngine.threadCount
         }
         contentItem: ColumnLayout {
             spacing: 10
@@ -504,6 +508,98 @@ Window {
                 inputMethodHints: Qt.ImhDigitsOnly
                 font { family: root.monoFamily; pixelSize: 12 }
                 background: Rectangle { color: root.card; radius: 6 }
+            }
+
+            // -- v1.1.14+: thread count picker --
+            Rectangle { Layout.fillWidth: true; Layout.preferredHeight: 1; color: dim; opacity: 0.4 }
+            Text {
+                Layout.fillWidth: true; wrapMode: Text.WordWrap; color: dim
+                text: "CPU THREADS — how many cores the miner uses. More threads = more hashrate, more heat. Recommended is half your cores."
+                font { family: root.monoFamily; pixelSize: 10 }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Rectangle {
+                    Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                    radius: 6
+                    color: settingsDialog.pendingThreads > 1 ? amber : root.card
+                    Text {
+                        anchors.centerIn: parent; text: "−"
+                        color: settingsDialog.pendingThreads > 1 ? bg : dim
+                        font { family: root.monoFamily; pixelSize: 18; bold: true }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: settingsDialog.pendingThreads > 1
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: settingsDialog.pendingThreads = Math.max(1, settingsDialog.pendingThreads - 1)
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 40
+                    radius: 6
+                    color: root.card
+                    Text {
+                        anchors.centerIn: parent
+                        text: settingsDialog.pendingThreads + " of " + MinerEngine.maxCores
+                        color: amber
+                        font { family: root.monoFamily; pixelSize: 14; bold: true }
+                    }
+                }
+                Rectangle {
+                    Layout.preferredWidth: 40; Layout.preferredHeight: 40
+                    radius: 6
+                    color: settingsDialog.pendingThreads < MinerEngine.maxCores ? amber : root.card
+                    Text {
+                        anchors.centerIn: parent; text: "+"
+                        color: settingsDialog.pendingThreads < MinerEngine.maxCores ? bg : dim
+                        font { family: root.monoFamily; pixelSize: 18; bold: true }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        enabled: settingsDialog.pendingThreads < MinerEngine.maxCores
+                        cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                        onClicked: settingsDialog.pendingThreads = Math.min(MinerEngine.maxCores, settingsDialog.pendingThreads + 1)
+                    }
+                }
+            }
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 8
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 32
+                    radius: 6
+                    property int rec: Math.max(1, Math.floor((MinerEngine.maxCores + 1) / 2))
+                    color: settingsDialog.pendingThreads === rec ? amber : root.card
+                    Text {
+                        anchors.centerIn: parent
+                        text: "RECOMMENDED (" + parent.rec + ")"
+                        color: settingsDialog.pendingThreads === parent.rec ? bg : root.white_
+                        font { family: root.monoFamily; pixelSize: 10; bold: true; letterSpacing: 1 }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: settingsDialog.pendingThreads = parent.parent.rec
+                    }
+                }
+                Rectangle {
+                    Layout.fillWidth: true; Layout.preferredHeight: 32
+                    radius: 6
+                    color: settingsDialog.pendingThreads === MinerEngine.maxCores ? amber : root.card
+                    Text {
+                        anchors.centerIn: parent
+                        text: "ALL (" + MinerEngine.maxCores + ")"
+                        color: settingsDialog.pendingThreads === MinerEngine.maxCores ? bg : root.white_
+                        font { family: root.monoFamily; pixelSize: 10; bold: true; letterSpacing: 1 }
+                    }
+                    MouseArea {
+                        anchors.fill: parent
+                        cursorShape: Qt.PointingHandCursor
+                        onClicked: settingsDialog.pendingThreads = MinerEngine.maxCores
+                    }
+                }
             }
 
             // -- v1.1.8: pool mode --
@@ -567,6 +663,7 @@ Window {
                     var u = poolUrlField.text.trim();
                     if (u.length === 0) u = "https://glaciem-pool.frostmine.workers.dev";
                     MinerEngine.poolUrl = u;
+                    MinerEngine.threadCount = settingsDialog.pendingThreads;
                     settingsDialog.close();
                 }
             }

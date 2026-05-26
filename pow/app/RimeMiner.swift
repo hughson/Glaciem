@@ -101,6 +101,9 @@ struct ContentView: View {
     // pool; the field is editable so users can point at any pool.
     @State private var poolEnabled = UserDefaults.standard.bool(forKey: "poolEnabled")
     @State private var poolURL     = UserDefaults.standard.string(forKey: "poolURL") ?? "https://glaciem-pool.frostmine.workers.dev"
+    // v1.1.14+: thread-count picker. Default = (maxCores+1)/2 ("Recommended"),
+    // computed in onAppear once miner_max_cores() is callable.
+    @State private var threadCount = UserDefaults.standard.integer(forKey: "threadCount")
     @State private var showSettings = false
 
     private let tick = Timer.publish(every: 0.12, on: .main, in: .common).autoconnect()
@@ -129,6 +132,14 @@ struct ContentView: View {
         .onAppear {
             miner_set_node(nodeHost, Int32(nodePort))
             miner_set_pool_config(poolEnabled ? 1 : 0, poolURL)
+            // v1.1.14+: thread count picker. UserDefaults.integer returns 0
+            // for "not set yet" -- on first run we adopt the engine's
+            // built-in default (Recommended = (maxCores+1)/2).
+            let maxCores = Int(miner_max_cores())
+            if threadCount < 1 || threadCount > maxCores {
+                threadCount = Int(miner_get_thread_count())
+            }
+            miner_set_thread_count(Int32(threadCount))
             // re-open the embedded wallet if one was already generated
             if FileManager.default.fileExists(atPath: walletPath() + ".keys") {
                 miner_open_wallet(walletPath(), "")
@@ -137,16 +148,21 @@ struct ContentView: View {
         .sheet(isPresented: $showSettings) {
             SettingsSheet(host0: nodeHost, port0: nodePort,
                           poolEnabled0: poolEnabled, poolURL0: poolURL,
+                          threadCount0: threadCount,
+                          maxCores: Int(miner_max_cores()),
                           walletPath: walletPath(),
-                onSave: { h, p, pe, pu in
+                onSave: { h, p, pe, pu, tc in
                     nodeHost = h; nodePort = p
                     poolEnabled = pe; poolURL = pu
+                    threadCount = tc
                     UserDefaults.standard.set(h, forKey: "nodeHost")
                     UserDefaults.standard.set(p, forKey: "nodePort")
                     UserDefaults.standard.set(pe, forKey: "poolEnabled")
                     UserDefaults.standard.set(pu, forKey: "poolURL")
+                    UserDefaults.standard.set(tc, forKey: "threadCount")
                     miner_set_node(h, Int32(p))
                     miner_set_pool_config(pe ? 1 : 0, pu)
+                    miner_set_thread_count(Int32(tc))
                     showSettings = false
                 },
                 onCancel: { showSettings = false })
@@ -228,29 +244,36 @@ private struct HeaderView: View {
 // MARK: settings sheet (node + wallet + v1.1.6 pool mode)
 private struct SettingsSheet: View {
     let walletPath: String
-    /// Save callback: (host, port, poolEnabled, poolURL)
-    let onSave: (String, Int, Bool, String) -> Void
+    let maxCores: Int
+    /// Save callback: (host, port, poolEnabled, poolURL, threadCount)
+    let onSave: (String, Int, Bool, String, Int) -> Void
     let onCancel: () -> Void
     @State private var host: String
     @State private var port: String
     @State private var poolEnabled: Bool
     @State private var poolURL: String
+    @State private var threadCount: Int
     @State private var generated: GenWallet?
     @State private var showRestore = false
 
     init(host0: String, port0: Int,
          poolEnabled0: Bool, poolURL0: String,
+         threadCount0: Int, maxCores: Int,
          walletPath: String,
-         onSave: @escaping (String, Int, Bool, String) -> Void,
+         onSave: @escaping (String, Int, Bool, String, Int) -> Void,
          onCancel: @escaping () -> Void) {
         self.walletPath = walletPath
+        self.maxCores = max(1, maxCores)
         self.onSave = onSave
         self.onCancel = onCancel
         _host = State(initialValue: host0)
         _port = State(initialValue: String(port0))
         _poolEnabled = State(initialValue: poolEnabled0)
         _poolURL = State(initialValue: poolURL0)
+        _threadCount = State(initialValue: min(max(1, threadCount0), max(1, maxCores)))
     }
+
+    private var recommendedThreads: Int { max(1, (maxCores + 1) / 2) }
 
     private func generateNewWallet() {
         let a = UnsafeMutablePointer<CChar>.allocate(capacity: 160)
@@ -300,6 +323,57 @@ private struct SettingsSheet: View {
                 .disabled(!poolEnabled)
                 .opacity(poolEnabled ? 1.0 : 0.5)
 
+            // ---- v1.1.14+: thread-count picker ----
+            Text("CPU THREADS — how many cores the miner uses. More threads = more hashrate, more heat & fan noise. Recommended is half your cores.")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(dimText)
+                .multilineTextAlignment(.leading)
+                .fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
+            HStack(spacing: 8) {
+                Button(action: { if threadCount > 1 { threadCount -= 1 } }) {
+                    Text("−")
+                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
+                        .foregroundColor(threadCount > 1 ? bg : dimText)
+                        .frame(width: 40, height: 40)
+                        .background(threadCount > 1 ? amber : card)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }.buttonStyle(.plain).disabled(threadCount <= 1)
+                Text("\(threadCount) of \(maxCores)")
+                    .font(.system(size: 14, weight: .bold, design: .monospaced))
+                    .foregroundColor(amber)
+                    .frame(maxWidth: .infinity)
+                    .padding(.vertical, 10)
+                    .background(card)
+                    .clipShape(RoundedRectangle(cornerRadius: 7))
+                Button(action: { if threadCount < maxCores { threadCount += 1 } }) {
+                    Text("+")
+                        .font(.system(size: 18, weight: .heavy, design: .monospaced))
+                        .foregroundColor(threadCount < maxCores ? bg : dimText)
+                        .frame(width: 40, height: 40)
+                        .background(threadCount < maxCores ? amber : card)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }.buttonStyle(.plain).disabled(threadCount >= maxCores)
+            }
+            HStack(spacing: 8) {
+                Button(action: { threadCount = recommendedThreads }) {
+                    Text("RECOMMENDED (\(recommendedThreads))")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(threadCount == recommendedThreads ? bg : .white)
+                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .background(threadCount == recommendedThreads ? amber : card)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }.buttonStyle(.plain)
+                Button(action: { threadCount = maxCores }) {
+                    Text("ALL (\(maxCores))")
+                        .font(.system(size: 10, weight: .bold, design: .monospaced))
+                        .foregroundColor(threadCount == maxCores ? bg : .white)
+                        .frame(maxWidth: .infinity).padding(.vertical, 7)
+                        .background(threadCount == maxCores ? amber : card)
+                        .clipShape(RoundedRectangle(cornerRadius: 7))
+                }.buttonStyle(.plain)
+            }
+
             Text("WALLET — generate a wallet to mine to and hold GLAC. Balance and Send use this built-in wallet.")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(dimText)
@@ -325,7 +399,8 @@ private struct SettingsSheet: View {
                 onSave(h.isEmpty ? "glaciem-rpc.frostmine.workers.dev" : h,
                        Int(port) ?? 443,
                        poolEnabled,
-                       pu.isEmpty ? "https://glaciem-pool.frostmine.workers.dev" : pu)
+                       pu.isEmpty ? "https://glaciem-pool.frostmine.workers.dev" : pu,
+                       min(max(1, threadCount), max(1, maxCores)))
             }) {
                 Text("SAVE")
                     .font(.system(size: 13, weight: .heavy, design: .rounded))

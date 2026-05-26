@@ -85,7 +85,7 @@ class MainActivity : ComponentActivity() {
     // the change reverted unless the app was fully restarted.
     private var uiNodeHost     by mutableStateOf("")
     private var uiNodePort     by mutableStateOf(0)
-    private var uiMiningMode   by mutableStateOf(MiningMode.MAX)
+    private var uiThreadCount  by mutableStateOf(1)
     private var uiPoolEnabled  by mutableStateOf(false)
     private var uiPoolUrl      by mutableStateOf("https://glaciem-pool.frostmine.workers.dev")
 
@@ -97,7 +97,7 @@ class MainActivity : ComponentActivity() {
 
         rpc = RpcClient(this)
         engine = MinerEngine(rpc)
-        loadSettings()                 // touches engine.setMiningMode -- must run after engine init
+        loadSettings()                 // touches engine.setThreadCount -- must run after engine init
 
         // re-open the embedded wallet if one was already generated
         if (java.io.File(walletPath() + ".keys").exists()) {
@@ -120,7 +120,8 @@ class MainActivity : ComponentActivity() {
                 walletPath = walletPath(),
                 initialNodeHost = uiNodeHost,
                 initialNodePort = uiNodePort,
-                initialMiningMode = uiMiningMode,
+                initialThreadCount = uiThreadCount,
+                maxCores = engine.getMaxCores(),
                 initialPoolEnabled = uiPoolEnabled,
                 initialPoolUrl = uiPoolUrl,
                 onToggleMining = ::toggleMining,
@@ -161,11 +162,26 @@ class MainActivity : ComponentActivity() {
         }
         rpc.nodeHost = p.getString("nodeHost", rpc.nodeHost) ?: rpc.nodeHost
         rpc.nodePort = p.getInt("nodePort", rpc.nodePort)
-        // Mining intensity (default MAX so the apparent hashrate matches what
-        // the v1.0.0 patch shipped; users who notice heat can dial down).
-        val modeName = p.getString("miningMode", MiningMode.MAX.name) ?: MiningMode.MAX.name
-        val mode = runCatching { MiningMode.valueOf(modeName) }.getOrDefault(MiningMode.MAX)
-        engine.setMiningMode(mode)
+        // v1.1.14+: thread count picker. Default = (maxCores+1)/2, matching
+        // Monero GUI's "Recommended" preset. If the user has an old v1.1.12/13
+        // miningMode pref (ECO/BALANCED/MAX), migrate it to a thread count
+        // and clear the legacy key so we never read it again.
+        val maxCores = engine.getMaxCores()
+        val recommended = ((maxCores + 1) / 2).coerceAtLeast(1)
+        val legacyMode = p.getString("miningMode", null)
+        val threadCount = if (legacyMode != null) {
+            val n = when (legacyMode) {
+                "ECO"      -> 1
+                "BALANCED" -> recommended
+                "MAX"      -> maxCores
+                else       -> recommended
+            }
+            p.edit().putInt("threadCount", n).remove("miningMode").apply()
+            n
+        } else {
+            p.getInt("threadCount", recommended).coerceIn(1, maxCores)
+        }
+        engine.setThreadCount(threadCount)
         // v1.1.6: pool mode. Default: off, official pool URL.
         val poolOn = p.getBoolean("poolEnabled", false)
         val poolUrlVal = p.getString("poolUrl", "https://glaciem-pool.frostmine.workers.dev")
@@ -175,21 +191,21 @@ class MainActivity : ComponentActivity() {
         // so the Settings dialog opens with whatever's actually saved.
         uiNodeHost    = rpc.nodeHost
         uiNodePort    = rpc.nodePort
-        uiMiningMode  = mode
+        uiThreadCount = threadCount
         uiPoolEnabled = poolOn
         uiPoolUrl     = poolUrlVal
     }
 
-    private fun saveSettings(nodeHost: String, nodePort: Int, mode: MiningMode,
+    private fun saveSettings(nodeHost: String, nodePort: Int, threadCount: Int,
                              poolEnabled: Boolean, poolUrl: String) {
         rpc.nodeHost = nodeHost.trim()
         rpc.nodePort = nodePort
-        engine.setMiningMode(mode)
+        engine.setThreadCount(threadCount)
         engine.setPoolConfig(poolEnabled, poolUrl.trim())
         getSharedPreferences("rime", Context.MODE_PRIVATE).edit()
             .putString("nodeHost", rpc.nodeHost)
             .putInt("nodePort", rpc.nodePort)
-            .putString("miningMode", mode.name)
+            .putInt("threadCount", engine.getThreadCount())
             .putBoolean("poolEnabled", poolEnabled)
             .putString("poolUrl", poolUrl.trim())
             .apply()
@@ -199,7 +215,7 @@ class MainActivity : ComponentActivity() {
         // already correct; this fixes the visual revert bug.
         uiNodeHost    = rpc.nodeHost
         uiNodePort    = rpc.nodePort
-        uiMiningMode  = mode
+        uiThreadCount = engine.getThreadCount()
         uiPoolEnabled = poolEnabled
         uiPoolUrl     = poolUrl.trim()
     }
@@ -218,11 +234,12 @@ private fun RimeScreen(
     walletPath: String,
     initialNodeHost: String,
     initialNodePort: Int,
-    initialMiningMode: MiningMode,
+    initialThreadCount: Int,
+    maxCores: Int,
     initialPoolEnabled: Boolean,
     initialPoolUrl: String,
     onToggleMining: () -> Unit,
-    onSaveSettings: (String, Int, MiningMode, Boolean, String) -> Unit,
+    onSaveSettings: (String, Int, Int, Boolean, String) -> Unit,
 ) {
     val stats by engine.stats.collectAsState()
     val running = stats.running
@@ -289,13 +306,14 @@ private fun RimeScreen(
         SettingsDialog(
             nodeHost0 = initialNodeHost,
             nodePort0 = initialNodePort,
-            miningMode0 = initialMiningMode,
+            threadCount0 = initialThreadCount,
+            maxCores = maxCores,
             poolEnabled0 = initialPoolEnabled,
             poolUrl0 = initialPoolUrl,
             engine = engine,
             walletPath = walletPath,
-            onSave = { nh, np, mode, pe, pu ->
-                onSaveSettings(nh, np, mode, pe, pu)
+            onSave = { nh, np, tc, pe, pu ->
+                onSaveSettings(nh, np, tc, pe, pu)
                 showSettings = false
             },
             onDismiss = { showSettings = false },
@@ -823,17 +841,18 @@ private fun ReceiveDialog(address: String, onDismiss: () -> Unit) {
 private fun SettingsDialog(
     nodeHost0: String,
     nodePort0: Int,
-    miningMode0: MiningMode,
+    threadCount0: Int,
+    maxCores: Int,
     poolEnabled0: Boolean,
     poolUrl0: String,
     engine: MinerEngine,
     walletPath: String,
-    onSave: (String, Int, MiningMode, Boolean, String) -> Unit,
+    onSave: (String, Int, Int, Boolean, String) -> Unit,
     onDismiss: () -> Unit,
 ) {
     var nodeHost by remember { mutableStateOf(nodeHost0) }
     var nodePort by remember { mutableStateOf(nodePort0.toString()) }
-    var miningMode by remember { mutableStateOf(miningMode0) }
+    var threadCount by remember { mutableStateOf(threadCount0.coerceIn(1, maxCores)) }
     var poolEnabled by remember { mutableStateOf(poolEnabled0) }
     var poolUrl by remember { mutableStateOf(poolUrl0) }
     var showGenerated by remember { mutableStateOf(false) }
@@ -860,11 +879,16 @@ private fun SettingsDialog(
             SettingField("node address", nodeHost) { nodeHost = it }
             SettingField("node port", nodePort, numeric = true) { nodePort = it }
             Text(
-                "MINING INTENSITY — Eco uses 1 core (quiet & cool), Balanced uses " +
-                    "half, Max uses all cores (full hashrate, more heat & battery).",
+                "CPU THREADS — how many cores the miner uses. More threads = " +
+                    "more hashrate, more heat & battery use. Recommended is " +
+                    "half your cores.",
                 color = dim, fontFamily = mono, fontSize = 9.sp,
             )
-            IntensityPicker(selected = miningMode) { miningMode = it }
+            ThreadCountPicker(
+                value = threadCount,
+                maxCores = maxCores,
+                onChange = { threadCount = it },
+            )
 
             // ---- v1.1.6: pool mode toggle + URL ----
             Spacer(Modifier.height(4.dp))
@@ -911,7 +935,7 @@ private fun SettingsDialog(
             TextButton(
                 onClick = {
                     val pu = poolUrl.trim().ifBlank { "https://glaciem-pool.frostmine.workers.dev" }
-                    onSave(nodeHost, nodePort.toIntOrNull() ?: 19081, miningMode, poolEnabled, pu)
+                    onSave(nodeHost, nodePort.toIntOrNull() ?: 19081, threadCount, poolEnabled, pu)
                 },
             ) { Text("SAVE", color = amber, fontWeight = FontWeight.Bold) }
             TextButton(onClick = onDismiss) { Text("CANCEL", color = Color.White) }
@@ -1084,36 +1108,112 @@ private fun SettingField(
     )
 }
 
-/** 3-button segmented control for ECO / BALANCED / MAX mining intensity. */
+/** v1.1.14+: thread-count picker.
+ *
+ *  [ - ]  [   N   ]  [ + ]    [ Recommended (M/2) ]   [ All (M) ]
+ *
+ *  Same layout idea as Monero GUI's mining tab: a tap-to-adjust counter
+ *  with two preset shortcuts. */
 @Composable
-private fun IntensityPicker(
-    selected: MiningMode,
-    onSelect: (MiningMode) -> Unit,
+private fun ThreadCountPicker(
+    value: Int,
+    maxCores: Int,
+    onChange: (Int) -> Unit,
 ) {
-    Row(
-        modifier = Modifier.fillMaxWidth(),
-        horizontalArrangement = Arrangement.spacedBy(8.dp),
-    ) {
-        for (mode in MiningMode.values()) {
-            val isSel = mode == selected
+    val recommended = ((maxCores + 1) / 2).coerceAtLeast(1)
+    val clamped = value.coerceIn(1, maxCores)
+
+    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        // counter row: [-] [N] [+]
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            CounterButton(label = "−", enabled = clamped > 1) {
+                onChange((clamped - 1).coerceAtLeast(1))
+            }
             Box(
                 modifier = Modifier
                     .weight(1f)
                     .clip(RoundedCornerShape(6.dp))
-                    .background(if (isSel) amber else card)
-                    .clickable { onSelect(mode) }
-                    .padding(vertical = 8.dp),
+                    .background(card)
+                    .padding(vertical = 10.dp),
                 contentAlignment = Alignment.Center,
             ) {
                 Text(
-                    mode.name,
-                    color = if (isSel) bg else Color.White,
+                    "$clamped of $maxCores",
+                    color = amber,
                     fontFamily = mono,
-                    fontSize = 11.sp,
+                    fontSize = 13.sp,
                     fontWeight = FontWeight.Bold,
                 )
             }
+            CounterButton(label = "+", enabled = clamped < maxCores) {
+                onChange((clamped + 1).coerceAtMost(maxCores))
+            }
         }
+        // preset row: [Recommended (N/2)] [All (N)]
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            PresetButton(
+                label = "RECOMMENDED ($recommended)",
+                isSelected = clamped == recommended,
+                modifier = Modifier.weight(1f),
+            ) { onChange(recommended) }
+            PresetButton(
+                label = "ALL ($maxCores)",
+                isSelected = clamped == maxCores,
+                modifier = Modifier.weight(1f),
+            ) { onChange(maxCores) }
+        }
+    }
+}
+
+@Composable
+private fun CounterButton(label: String, enabled: Boolean, onClick: () -> Unit) {
+    Box(
+        modifier = Modifier
+            .size(40.dp)
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (enabled) amber else card)
+            .clickable(enabled = enabled, onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (enabled) bg else dim,
+            fontFamily = mono,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Bold,
+        )
+    }
+}
+
+@Composable
+private fun PresetButton(
+    label: String,
+    isSelected: Boolean,
+    modifier: Modifier = Modifier,
+    onClick: () -> Unit,
+) {
+    Box(
+        modifier = modifier
+            .clip(RoundedCornerShape(6.dp))
+            .background(if (isSelected) amber else card)
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            label,
+            color = if (isSelected) bg else Color.White,
+            fontFamily = mono,
+            fontSize = 10.sp,
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 

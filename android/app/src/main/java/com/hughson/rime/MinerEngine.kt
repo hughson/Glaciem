@@ -8,10 +8,10 @@ import java.util.concurrent.Callable
 import java.util.concurrent.Executors
 import kotlin.random.Random
 
-/** Mining intensity selector -- how many cores the miner uses per batch.
- *  ECO = quiet & cool (1 core), BALANCED = compromise (half cores),
- *  MAX = full hashrate (all cores). Persisted in SharedPreferences. */
-enum class MiningMode { ECO, BALANCED, MAX }
+// v1.1.14+: thread-count picker replaces the ECO/BALANCED/MAX enum. The
+// number of mining threads is now an integer in 1..maxCores, persisted in
+// SharedPreferences as "threadCount". See MainActivity.loadSettings for the
+// migration path from the old enum.
 
 /** Snapshot of miner + wallet state for the UI. Mirrors MinerStats in miner_core.h. */
 data class MinerStats(
@@ -53,17 +53,14 @@ class MinerEngine(private val rpc: RpcClient) {
     private val maxCores = Runtime.getRuntime().availableProcessors().coerceIn(1, 8)
     private val pool = Executors.newFixedThreadPool(maxCores)
 
-    // Mining intensity -- read at the top of each batch so a mode switch takes
-    // effect within ~1 batch (sub-second). Idle pool threads in ECO/BALANCED
-    // cost effectively nothing.
-    @Volatile private var miningMode: MiningMode = MiningMode.MAX
-    private fun activeCores(): Int = when (miningMode) {
-        MiningMode.ECO      -> 1
-        MiningMode.BALANCED -> ((maxCores + 1) / 2).coerceAtLeast(1)
-        MiningMode.MAX      -> maxCores
-    }
-    fun setMiningMode(m: MiningMode) { miningMode = m }
-    fun getMiningMode(): MiningMode = miningMode
+    // v1.1.14+: thread-count picker. Read at the top of each batch so a
+    // change applies within ~1 batch (sub-second). Idle pool threads when
+    // threadCount < maxCores cost effectively nothing.
+    @Volatile private var threadCount: Int = ((maxCores + 1) / 2).coerceAtLeast(1)
+    private fun activeCores(): Int = threadCount.coerceIn(1, maxCores)
+    fun setThreadCount(n: Int) { threadCount = n.coerceIn(1, maxCores) }
+    fun getThreadCount(): Int = threadCount
+    fun getMaxCores(): Int = maxCores
 
     // v1.1.6: pool mode. When enabled, mineLoop pulls jobs from the pool
     // and submits shares to it instead of talking to a daemon directly.
@@ -283,7 +280,7 @@ class MinerEngine(private val rpc: RpcClient) {
         // PRNG quality.
         var nonceBase: Long = Random(System.nanoTime()).nextInt().toLong() and 0xFFFFFFFFL
         var prevDaemon = -1
-        android.util.Log.i(TAG, "mining started (mode=$miningMode, ${activeCores()}/$maxCores threads)")
+        android.util.Log.i(TAG, "mining started (${activeCores()}/$maxCores threads)")
 
         while (running) {
             // v1.1.10: defensive refresh. After N consecutive "invalid

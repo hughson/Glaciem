@@ -451,7 +451,36 @@ static double now_s(void) {
 #define CHUNK       64          /* nonces hashed per thread per batch */
 
 static u64 *g_dataset;          /* 4 MiB epoch dataset, shared read-only */
-static int  g_threads;
+static int  g_threads;       /* current thread count, re-read each batch */
+static int  g_max_cores = 1; /* hardware concurrency, set at startup */
+
+/* v1.1.14+: thread-count picker. Persisted to rime_threads.txt next to the
+ * .exe (single integer line). Read by the mining loop at the top of every
+ * batch so a settings change applies within ~1s without restart. */
+static void load_threads_config(void) {
+  SYSTEM_INFO si; GetSystemInfo(&si);
+  g_max_cores = (int)si.dwNumberOfProcessors;
+  if (g_max_cores < 1) g_max_cores = 1;
+  if (g_max_cores > MAX_THREADS) g_max_cores = MAX_THREADS;
+  int recommended = (g_max_cores + 1) / 2;
+  if (recommended < 1) recommended = 1;
+
+  FILE *f = fopen("rime_threads.txt","r");
+  int n = recommended;
+  if (f) {
+    int v = 0;
+    if (fscanf(f,"%d",&v) == 1 && v >= 1 && v <= g_max_cores) n = v;
+    fclose(f);
+  }
+  g_threads = n;
+}
+static void save_threads_config(int n) {
+  if (n < 1) n = 1;
+  if (n > g_max_cores) n = g_max_cores;
+  FILE *f = fopen("rime_threads.txt","w");
+  if (f) { fprintf(f,"%d\n",n); fclose(f); }
+  g_threads = n;
+}
 
 /* one worker hashes a contiguous run of nonces with Lattice
  *
@@ -541,12 +570,12 @@ static void sh_status(const char *s) {
 static unsigned __stdcall mine_thread(void *arg) {
   (void)arg;
 
-  SYSTEM_INFO si; GetSystemInfo(&si);
-  g_threads = (int)si.dwNumberOfProcessors;
-  if (g_threads < 1) g_threads = 1;
-  if (g_threads > MAX_THREADS) g_threads = MAX_THREADS;
+  /* v1.1.14+: thread count is loaded once on startup (load_threads_config
+   * in WinMain). The mining loop re-reads g_threads at the top of every
+   * batch so the Settings dialog can change it on the fly. */
+  if (g_max_cores < 1) load_threads_config();   /* defensive */
   EnterCriticalSection(&g_sh.cs);
-  snprintf(g_sh.device,sizeof g_sh.device,"CPU - %d threads",g_threads);
+  snprintf(g_sh.device,sizeof g_sh.device,"CPU - %d threads",g_max_cores);
   LeaveCriticalSection(&g_sh.cs);
 
   if (!g_dataset) g_dataset = malloc(DATASET_WORDS*sizeof(u64));
@@ -1437,7 +1466,22 @@ static void do_host(HWND parent) {
 #define IDC_POOL_URL    402
 #define IDC_POOL_OK     403
 #define IDC_POOL_CXL    404
+/* v1.1.14+: thread count picker */
+#define IDC_THR_MINUS   410
+#define IDC_THR_PLUS    411
+#define IDC_THR_LABEL   412
+#define IDC_THR_RECOMM  413
+#define IDC_THR_ALL     414
 static HWND g_pool_dlg;
+static int  g_pool_dlg_threads;   /* tentative value while dialog is open */
+
+static void update_thread_label(HWND dlg) {
+  char buf[64];
+  snprintf(buf,sizeof buf,"%d of %d threads",g_pool_dlg_threads,g_max_cores);
+  SetWindowTextA(GetDlgItem(dlg,IDC_THR_LABEL),buf);
+  EnableWindow(GetDlgItem(dlg,IDC_THR_MINUS),g_pool_dlg_threads > 1);
+  EnableWindow(GetDlgItem(dlg,IDC_THR_PLUS), g_pool_dlg_threads < g_max_cores);
+}
 
 static LRESULT CALLBACK PoolProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
@@ -1465,10 +1509,37 @@ static LRESULT CALLBACK PoolProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                     "-- works with any compatible pool. Saved to "
                     "rime_pool.txt; takes effect at the next mining iteration.",
                     WS_CHILD|WS_VISIBLE, 16,162,408,40,h,NULL,hi,NULL);
+
+    /* v1.1.14+: thread count picker */
+    CreateWindowExA(0,"STATIC",
+                    "CPU THREADS -- how many cores the miner uses. More "
+                    "threads = more hashrate, more heat. Recommended is "
+                    "half your cores. Takes effect at the next batch.",
+                    WS_CHILD|WS_VISIBLE, 16,210,408,40,h,NULL,hi,NULL);
+    g_pool_dlg_threads = g_threads;
+    CreateWindowExA(0,"BUTTON","-",WS_CHILD|WS_VISIBLE,
+                    16,254,40,30,h,(HMENU)IDC_THR_MINUS,hi,NULL);
+    CreateWindowExA(0,"STATIC","",
+                    WS_CHILD|WS_VISIBLE|SS_CENTER,
+                    62,260,180,22,h,(HMENU)IDC_THR_LABEL,hi,NULL);
+    CreateWindowExA(0,"BUTTON","+",WS_CHILD|WS_VISIBLE,
+                    248,254,40,30,h,(HMENU)IDC_THR_PLUS,hi,NULL);
+    {
+      char rb[32], ab[32];
+      int recommended = (g_max_cores + 1) / 2; if (recommended<1) recommended=1;
+      snprintf(rb,sizeof rb,"Recommended (%d)",recommended);
+      snprintf(ab,sizeof ab,"All (%d)",g_max_cores);
+      CreateWindowExA(0,"BUTTON",rb,WS_CHILD|WS_VISIBLE,
+                      300,254,124,30,h,(HMENU)IDC_THR_RECOMM,hi,NULL);
+      CreateWindowExA(0,"BUTTON",ab,WS_CHILD|WS_VISIBLE,
+                      300,290,124,30,h,(HMENU)IDC_THR_ALL,hi,NULL);
+    }
+    update_thread_label(h);
+
     CreateWindowExA(0,"BUTTON","Save",WS_CHILD|WS_VISIBLE|BS_DEFPUSHBUTTON,
-                    232,210,92,30,h,(HMENU)IDC_POOL_OK,hi,NULL);
+                    232,330,92,30,h,(HMENU)IDC_POOL_OK,hi,NULL);
     CreateWindowExA(0,"BUTTON","Cancel",WS_CHILD|WS_VISIBLE,
-                    332,210,92,30,h,(HMENU)IDC_POOL_CXL,hi,NULL);
+                    332,330,92,30,h,(HMENU)IDC_POOL_CXL,hi,NULL);
     return 0;
   }
   case WM_COMMAND:
@@ -1498,10 +1569,28 @@ static LRESULT CALLBACK PoolProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
       g_pool_enabled = new_enabled;
       if (url[0]) snprintf(g_pool_url,sizeof g_pool_url,"%s",url);
       parse_pool_url();
+      /* v1.1.14+: persist the tentative thread-count value */
+      save_threads_config(g_pool_dlg_threads);
+      EnterCriticalSection(&g_sh.cs);
+      snprintf(g_sh.device,sizeof g_sh.device,"CPU - %d threads",g_max_cores);
+      LeaveCriticalSection(&g_sh.cs);
       InvalidateRect(g_hwnd,NULL,FALSE);   /* repaint header button label */
       DestroyWindow(h);
     } else if (LOWORD(wp)==IDC_POOL_CXL) {
       DestroyWindow(h);
+    } else if (LOWORD(wp)==IDC_THR_MINUS) {
+      if (g_pool_dlg_threads > 1) g_pool_dlg_threads--;
+      update_thread_label(h);
+    } else if (LOWORD(wp)==IDC_THR_PLUS) {
+      if (g_pool_dlg_threads < g_max_cores) g_pool_dlg_threads++;
+      update_thread_label(h);
+    } else if (LOWORD(wp)==IDC_THR_RECOMM) {
+      g_pool_dlg_threads = (g_max_cores + 1) / 2;
+      if (g_pool_dlg_threads < 1) g_pool_dlg_threads = 1;
+      update_thread_label(h);
+    } else if (LOWORD(wp)==IDC_THR_ALL) {
+      g_pool_dlg_threads = g_max_cores;
+      update_thread_label(h);
     }
     return 0;
   case WM_CLOSE: DestroyWindow(h); return 0;
@@ -1519,9 +1608,9 @@ static void do_pool(HWND parent) {
   HINSTANCE hi=(HINSTANCE)GetWindowLongPtrA(parent,GWLP_HINSTANCE);
   RECT pr; GetWindowRect(parent,&pr);
   EnableWindow(parent,FALSE);
-  g_pool_dlg=CreateWindowExA(WS_EX_DLGMODALFRAME,"RimePoolWnd","Pool Mode",
+  g_pool_dlg=CreateWindowExA(WS_EX_DLGMODALFRAME,"RimePoolWnd","Mining Settings",
       WS_POPUP|WS_CAPTION|WS_SYSMENU|WS_VISIBLE,
-      pr.left+40,pr.top+70,460,310,parent,NULL,hi,NULL);
+      pr.left+40,pr.top+70,460,440,parent,NULL,hi,NULL);
   if (!g_pool_dlg) EnableWindow(parent,TRUE);
 }
 
@@ -1596,7 +1685,8 @@ int WINAPI WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show) {
   (void)hPrev;
   SetProcessDPIAware();          /* crisp on high-DPI tablet displays */
   load_host(cmd);
-  load_pool_config();   /* v1.1.7: read rime_pool.txt for pool mode + URL */
+  load_pool_config();    /* v1.1.7: read rime_pool.txt for pool mode + URL */
+  load_threads_config(); /* v1.1.14+: read rime_threads.txt for thread count */
   InitializeCriticalSection(&g_sh.cs);
 
   WNDCLASSA wc={0};

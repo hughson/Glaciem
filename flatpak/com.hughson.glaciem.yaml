@@ -1,0 +1,75 @@
+# Flatpak manifest for Glaciem Miner (Linux desktop wallet + Lattice CPU miner).
+#
+# Built from the same binary tree as the AppImage release — we ride on
+# org.kde.Platform//6.6 for Qt6 (no need to bundle Qt6 ourselves) and bundle
+# only our binary + assets.
+#
+# Build:
+#   flatpak-builder --user --install-deps-from=flathub --force-clean \
+#       --repo=build-repo build-dir flatpak/com.hughson.glaciem.yaml
+#   flatpak build-bundle build-repo Glaciem-Miner-Linux.flatpak \
+#       com.hughson.glaciem
+#
+# Install (end user):
+#   flatpak install --user Glaciem-Miner-Linux.flatpak
+#   # or: double-click in GNOME Software / Plasma Discover
+#
+# Run:
+#   flatpak run com.hughson.glaciem
+#   # or just click the menu icon
+
+app-id: com.hughson.glaciem
+runtime: org.kde.Platform
+runtime-version: '6.10'
+sdk: org.kde.Sdk
+command: glaciem-miner
+
+finish-args:
+  # Network access for the wallet's daemon RPC + the pool stratum.
+  - --share=network
+  # IPC for clipboard etc.
+  - --share=ipc
+  # Display: Wayland first, X11 fallback.
+  - --socket=wayland
+  - --socket=fallback-x11
+  # GPU access for Qt6 RHI (rendering acceleration). Optional but smoother.
+  - --device=dri
+  # Wallet files: live under ~/.var/app/com.hughson.glaciem/data via
+  # QStandardPaths::AppLocalDataLocation automatically inside the sandbox.
+  # No --filesystem flag needed; the sandbox-private storage Just Works.
+
+modules:
+  - name: glaciem-miner
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 glaciem-miner /app/bin/glaciem-miner
+      - install -Dm644 glaciem-miner.png
+          /app/share/icons/hicolor/256x256/apps/com.hughson.glaciem.png
+      - install -Dm644 com.hughson.glaciem.desktop
+          /app/share/applications/com.hughson.glaciem.desktop
+      - install -Dm644 com.hughson.glaciem.metainfo.xml
+          /app/share/metainfo/com.hughson.glaciem.metainfo.xml
+      # Bundle the non-Qt6 libs the AppImage carries — the KDE 6.6 runtime
+      # provides Qt6/zlib/glibc/etc., but does NOT provide Boost, libsodium,
+      # libunbound, hidapi, or the older libcurl variants the Monero wallet
+      # code links against. Copy lib/ wholesale and let /app/lib take loader
+      # precedence over runtime versions for anything we ship.
+      - mkdir -p /app/lib && tar -C /app/lib -xf vendor-libs.tar
+    sources:
+      # The binary itself, lifted out of the AppImage's squashfs tree.
+      - type: file
+        path: glaciem-miner
+      # 256x256 icon, also from the AppImage.
+      - type: file
+        path: glaciem-miner.png
+      # Desktop entry — uses the Flatpak app-ID so GNOME/KDE find it.
+      - type: file
+        path: com.hughson.glaciem.desktop
+      # AppStream metadata so GNOME Software / Discover render a proper card.
+      - type: file
+        path: com.hughson.glaciem.metainfo.xml
+      # All non-Qt6 bundled libs from the AppImage, tarred up by
+      # build-flatpak.sh. type: dir doesn't reliably stage a directory into
+      # the build sandbox in flatpak-builder 1.4.x — using an archive instead.
+      - type: file
+        path: vendor-libs.tar

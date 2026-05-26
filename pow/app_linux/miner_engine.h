@@ -59,6 +59,11 @@ class MinerEngine : public QObject {
     // miners are credited proportionally to share contribution.
     Q_PROPERTY(bool    poolEnabled READ poolEnabled WRITE setPoolEnabled NOTIFY poolChanged)
     Q_PROPERTY(QString poolUrl     READ poolUrl     WRITE setPoolUrl     NOTIFY poolChanged)
+    // v1.1.14+: thread-count picker. WorkerThread reads m_threadCount at the
+    // top of every batch so a change takes effect within a few seconds. Range
+    // is 1..maxCores; maxCores is exposed as a constant so QML can clamp.
+    Q_PROPERTY(int threadCount READ threadCount WRITE setThreadCount NOTIFY threadCountChanged)
+    Q_PROPERTY(int maxCores    READ maxCores    CONSTANT)
 
 public:
     explicit MinerEngine(QObject *parent = nullptr);
@@ -93,6 +98,10 @@ public:
     QString poolUrl() const;
     void    setPoolEnabled(bool on);
     void    setPoolUrl(const QString &url);
+
+    int  threadCount() const;
+    int  maxCores() const;
+    void setThreadCount(int n);
 
 public slots:
     // --- mining control ---
@@ -129,6 +138,7 @@ signals:
     void statsChanged();
     void nodeChanged();
     void poolChanged();
+    void threadCountChanged();
     // address + 25-word seed of a freshly generated wallet, waiting for the
     // user to confirm before it becomes the app's embedded wallet
     void generatedWallet(QString address, QString seed);
@@ -167,6 +177,10 @@ private:
     // v1.1.8: pool mode state
     bool    m_poolEnabled = false;
     QString m_poolUrl = QStringLiteral("https://glaciem-pool.frostmine.workers.dev");
+    // v1.1.14+: thread count picker. Atomic so WorkerThread can read it
+    // without holding m_lock at the top of every batch.
+    std::atomic<int> m_threadCount{0};   // 0 = "not yet set, use recommended"
+    int              m_maxCores = 1;     // populated in ctor from hardware_concurrency
 
     // pending generated wallet awaiting user confirm
     QString m_pendingAddr, m_pendingSeed;

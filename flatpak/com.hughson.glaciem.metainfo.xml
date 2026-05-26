@@ -1,0 +1,55 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.hughson.glaciem</id>
+
+  <name>Glaciem Miner</name>
+  <summary>CPU-only Lattice miner with a built-in Glaciem wallet</summary>
+
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>BSD-3-Clause</project_license>
+
+  <developer id="com.hughson">
+    <name>Hughson</name>
+  </developer>
+
+  <description>
+    <p>
+      Glaciem Miner is a desktop app that mines the Glaciem cryptocurrency
+      using its native Lattice proof-of-work — a CPU-only, integer, memory-
+      latency-bound algorithm that rewards wide high-IPC CPU cores and
+      collapses GPU and ASIC occupancy by design.
+    </p>
+    <p>
+      A full Glaciem wallet is embedded directly in the app: generate a
+      seed, sync with the network, mine to your own address, and send &amp;
+      receive — no separate wallet daemon, no config files.
+    </p>
+    <p>
+      Glaciem is a Monero fork with privacy (RingCT, ring signatures,
+      stealth addresses) inherited unchanged. Mainnet launched May 20, 2026
+      as a true fair launch, with no premine and no presale.
+    </p>
+  </description>
+
+  <launchable type="desktop-id">com.hughson.glaciem.desktop</launchable>
+
+  <url type="homepage">https://glaciem.frostmine.workers.dev</url>
+  <url type="bugtracker">https://github.com/hughson/Glaciem/issues</url>
+
+  <content_rating type="oars-1.1" />
+
+  <releases>
+    <release version="1.1.14" date="2026-05-25">
+      <description>
+        <p>Linux wallet display fix and a per-platform thread spinner.</p>
+        <ul>
+          <li>Linux wallet now correctly displays "GLAC" when sending (was
+              "RME" in v1.1.11 due to a stale build artifact).</li>
+          <li>New CPU threads picker in Settings — choose how many cores
+              the miner uses, with one-click Recommended (N/2) and All (N)
+              presets.</li>
+        </ul>
+      </description>
+    </release>
+  </releases>
+</component>

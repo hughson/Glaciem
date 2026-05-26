@@ -57,6 +57,14 @@ void        miner_set_node(const char *host, int port);
  * Safe to call at any time; takes effect on the next mining-loop iteration. */
 void        miner_set_pool_config(int enabled, const char *url);
 
+/* v1.1.14+: thread-count picker.
+ *   miner_set_thread_count(n) clamps to [1, miner_max_cores()] and applies
+ *   at the next batch (~1s). miner_max_cores() returns the physical cores
+ *   the OS reports, so the UI can clamp its spinner range. */
+void        miner_set_thread_count(int n);
+int         miner_get_thread_count(void);
+int         miner_max_cores(void);
+
 /* Open the app's embedded wallet at `path`. `seed` non-empty recovers a wallet
    for that 25-word mnemonic (replacing any existing file); `seed` empty/NULL
    opens the existing wallet file. Runs on a background thread -- the scan can

@@ -61,6 +61,24 @@ static RimeWallet   *g_wallet           = NULL; /* embedded wallet handle    */
 static volatile int    g_pool_enabled     = 0;
 static char            g_pool_url[256]    = "https://glaciem-pool.frostmine.workers.dev";
 
+/* v1.1.14+: thread-count picker. Init from activeProcessorCount on first use;
+ * the Swift UI (RimeMiner.swift @AppStorage) calls miner_set_thread_count
+ * after launch with the value the user picked last session. */
+static volatile int    g_thread_count     = 0;   /* 0 = "not yet set, use recommended" */
+static int             g_max_cores        = 0;   /* lazy-init from NSProcessInfo      */
+
+static void ensure_cores_init(void) {
+  if (g_max_cores > 0) return;
+  int n = (int)[[NSProcessInfo processInfo] activeProcessorCount];
+  if (n < 1) n = 1;
+  g_max_cores = n;
+  if (g_thread_count == 0) {
+    int rec = (n + 1) / 2;
+    if (rec < 1) rec = 1;
+    g_thread_count = rec;
+  }
+}
+
 static double now_s(void) {
   struct timespec t; clock_gettime(CLOCK_MONOTONIC,&t);
   return t.tv_sec + t.tv_nsec/1e9;
@@ -651,24 +669,86 @@ static void *worker(void *arg) {
          so the hashrate reflects real compute. On a low-difficulty testnet a
          block is found almost every batch; early-out would make the rate
          (BATCH / partial-time) spike wildly. */
-      dispatch_apply(BATCH, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH,0),
-                     ^(size_t n){
-        u8 blob[256]; memcpy(blob,hb,hb_len);
-        uint32_t nn=base+(uint32_t)n;
-        blob[noff]=(u8)nn; blob[noff+1]=(u8)(nn>>8);
-        blob[noff+2]=(u8)(nn>>16); blob[noff+3]=(u8)(nn>>24);
-        u8 mh[32];
-        lattice_hash_ds(blob,hb_len,ds,mh);
-        int z=lz_bits(mh);
-        if(z>bbest){ pthread_mutex_lock(&g_lock); if(z>bbest) bbest=z;
-                     pthread_mutex_unlock(&g_lock); }
-        if(meets_target(mh,diff)){
-          pthread_mutex_lock(&g_lock);
-          if (n_winners < WIN_MAX) winners[n_winners++] = nn;
-          pthread_mutex_unlock(&g_lock);
+      /* v1.1.14+: thread-count picker. Two code paths so we don't pay the
+       * P/E convoy tax on Apple Silicon when ALL cores are selected:
+       *
+       *   - n_threads >= max_cores (ALL): use the original
+       *     dispatch_apply(BATCH, ...) pattern. GCD pulls tasks from a
+       *     shared queue, so fast P-cores naturally pick up more work than
+       *     E-cores and the batch finishes in ~max-core-speed time, not
+       *     ~min-core-speed time.
+       *
+       *   - n_threads < max_cores (capped): submit BATCH/N small chunks
+       *     through a dispatch_semaphore that throttles to n_threads
+       *     in-flight. 8x oversubscription per budgeted thread keeps the
+       *     load balancer happy across asymmetric cores.
+       *
+       * Re-read g_thread_count once per batch so a Settings change applies
+       * within ~1s without restarting mining. */
+      int n_threads = g_thread_count;
+      if (n_threads < 1) n_threads = 1;
+      if (n_threads > g_max_cores) n_threads = g_max_cores;
+
+      if (n_threads >= g_max_cores) {
+        /* Fast path -- bit-for-bit the v1.1.13 hot loop. No concurrency
+         * throttle, GCD load-balances 512 tiny tasks across all cores. */
+        dispatch_apply(BATCH, dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH,0),
+                       ^(size_t n){
+          u8 blob[256]; memcpy(blob,hb,hb_len);
+          uint32_t nn=base+(uint32_t)n;
+          blob[noff]=(u8)nn; blob[noff+1]=(u8)(nn>>8);
+          blob[noff+2]=(u8)(nn>>16); blob[noff+3]=(u8)(nn>>24);
+          u8 mh[32];
+          lattice_hash_ds(blob,hb_len,ds,mh);
+          int z=lz_bits(mh);
+          if(z>bbest){ pthread_mutex_lock(&g_lock); if(z>bbest) bbest=z;
+                       pthread_mutex_unlock(&g_lock); }
+          if(meets_target(mh,diff)){
+            pthread_mutex_lock(&g_lock);
+            if (n_winners < WIN_MAX) winners[n_winners++] = nn;
+            pthread_mutex_unlock(&g_lock);
+          }
+          if(n==BATCH-1) for(int i=0;i<32;i++) sprintf(lh+i*2,"%02x",mh[i]);
+        });
+      } else {
+        /* Capped path -- throttle to n_threads in-flight with semaphore.
+         * Submit 8 chunks per thread so faster cores can pick up slack. */
+        const int chunks_per_thread = 8;
+        int total_chunks = n_threads * chunks_per_thread;
+        if (total_chunks > BATCH) total_chunks = BATCH;
+        int chunk_size = (BATCH + total_chunks - 1) / total_chunks;
+        dispatch_semaphore_t sem = dispatch_semaphore_create(n_threads);
+        dispatch_group_t      group = dispatch_group_create();
+        dispatch_queue_t      gq    = dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_HIGH,0);
+        for (int c = 0; c < total_chunks; c++) {
+          dispatch_semaphore_wait(sem, DISPATCH_TIME_FOREVER);
+          int chunk_idx = c;
+          dispatch_group_async(group, gq, ^{
+            size_t start = (size_t)chunk_idx * (size_t)chunk_size;
+            size_t end   = start + (size_t)chunk_size;
+            if (end > BATCH) end = BATCH;
+            u8 blob[256]; memcpy(blob,hb,hb_len);
+            u8 mh[32];
+            for (size_t n = start; n < end; n++) {
+              uint32_t nn=base+(uint32_t)n;
+              blob[noff]=(u8)nn; blob[noff+1]=(u8)(nn>>8);
+              blob[noff+2]=(u8)(nn>>16); blob[noff+3]=(u8)(nn>>24);
+              lattice_hash_ds(blob,hb_len,ds,mh);
+              int z=lz_bits(mh);
+              if(z>bbest){ pthread_mutex_lock(&g_lock); if(z>bbest) bbest=z;
+                           pthread_mutex_unlock(&g_lock); }
+              if(meets_target(mh,diff)){
+                pthread_mutex_lock(&g_lock);
+                if (n_winners < WIN_MAX) winners[n_winners++] = nn;
+                pthread_mutex_unlock(&g_lock);
+              }
+              if(n==BATCH-1) for(int i=0;i<32;i++) sprintf(lh+i*2,"%02x",mh[i]);
+            }
+            dispatch_semaphore_signal(sem);
+          });
         }
-        if(n==BATCH-1) for(int i=0;i<32;i++) sprintf(lh+i*2,"%02x",mh[i]);
-      });
+        dispatch_group_wait(group, DISPATCH_TIME_FOREVER);
+      }
       double now = now_s();
       double interval = now - prev_end; if (interval < 1e-6) interval = 1e-6;
       double inst = BATCH / interval;
@@ -733,6 +813,7 @@ static void *worker(void *arg) {
 
 void miner_start(void) {
   if(g_running) return;
+  ensure_cores_init();
   pthread_mutex_lock(&g_lock);
   /* v1.1.10: reset MINING counters only -- earlier versions zeroed the
    * entire g_stats struct, which also wiped balance / unlocked_balance /
@@ -845,6 +926,23 @@ void miner_set_pool_config(int enabled, const char *url) {
     strcpy(g_pool_url, tmp);
   }
   pthread_mutex_unlock(&g_lock);
+}
+
+/* v1.1.14+: thread-count picker. Worker re-reads g_thread_count at the top
+ * of every batch, so changes apply within ~1s without restarting mining. */
+void miner_set_thread_count(int n) {
+  ensure_cores_init();
+  if (n < 1) n = 1;
+  if (n > g_max_cores) n = g_max_cores;
+  g_thread_count = n;
+}
+int miner_get_thread_count(void) {
+  ensure_cores_init();
+  return g_thread_count;
+}
+int miner_max_cores(void) {
+  ensure_cores_init();
+  return g_max_cores;
 }
 
 /* generate a fresh Rime wallet via the keygen library (Rime's real crypto) */
