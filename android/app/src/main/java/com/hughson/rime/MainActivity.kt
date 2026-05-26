@@ -366,7 +366,7 @@ private fun Header(
                 .clickable { onSettings() }
                 .padding(horizontal = 10.dp, vertical = 6.dp),
         ) {
-            Text("HOST", color = dim, fontFamily = mono,
+            Text("SETTINGS", color = dim, fontFamily = mono,
                 fontSize = 10.sp, fontWeight = FontWeight.Bold)
         }
     }

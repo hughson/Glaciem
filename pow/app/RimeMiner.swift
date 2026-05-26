@@ -228,7 +228,7 @@ private struct HeaderView: View {
             }
             .onAppear { pulse = true }
             Button(action: onSettings) {
-                Text("HOST")
+                Text("SETTINGS")
                     .font(.system(size: 10, weight: .bold, design: .monospaced))
                     .foregroundColor(dimText)
                     .padding(.horizontal, 10).padding(.vertical, 5)

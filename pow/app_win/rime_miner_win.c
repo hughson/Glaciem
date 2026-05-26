@@ -1021,9 +1021,11 @@ static void paint(HWND hwnd) {
     draw_text(dc,subtitle,30,54,DW-60,g_fSmall,C_DIM,DT_LEFT);
   }
   draw_button(dc,&R_HOST,C_BTN,"HOST",g_fSmall,C_AMBER);
-  /* v1.1.7: "POOL" toggle. Label flips to indicate current mode. */
-  draw_button(dc,&R_POOL,C_BTN,
-              g_pool_enabled ? "POOL ON" : "POOL",
+  /* v1.1.16: "SETTINGS" label (was "POOL" / "POOL ON" pre-v1.1.16).
+   * The dialog this button opens covers pool mode + thread count + node
+   * URL hint -- a Settings catch-all. We tint amber when pool mode is ON
+   * so users still get the at-a-glance status they had before. */
+  draw_button(dc,&R_POOL,C_BTN,"SETTINGS",
               g_fSmall, g_pool_enabled ? C_AMBER : 0x8a8a99);
 
   /* hashrate card */
