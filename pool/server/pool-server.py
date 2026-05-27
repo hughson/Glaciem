@@ -65,6 +65,18 @@ POOL_WALLET           = os.environ.get("POOL_WALLET",
 POOL_FEE_PERCENT      = float(os.environ.get("POOL_FEE_PERCENT", "0"))
 SHARE_DIFF_DIVISOR    = int(os.environ.get("SHARE_DIFF_DIVISOR", "1000"))
 TEMPLATE_REFRESH_S    = int(os.environ.get("TEMPLATE_REFRESH_S", "10"))
+# v1.1.16+: how long the pool is allowed to lag the chain tip before we
+# decide the daemon link is broken and exit() so systemd restarts us.
+# Failure modes this catches:
+#   - daemon crashed / unreachable: refresh_job() keeps failing, height stays
+#     pinned; watchdog fires after JOB_WATCHDOG_S of no advance past chain tip.
+#   - daemon up but returning stale template (e.g. RandomX verifier state
+#     corruption from a rejected submitblock): refresh_job() "succeeds" but
+#     pool.height < chain.height; watchdog notices and forces restart.
+# Default 180s is 1.5x the block target, generous enough that normal dry
+# spells don't trip it but tight enough that a 3h47m stuck-template event
+# (tonight's outage) becomes a 3-minute one.
+JOB_WATCHDOG_S        = int(os.environ.get("JOB_WATCHDOG_S", "180"))
 CREDITS_FILE          = os.environ.get(
     "CREDITS_FILE",
     os.path.join(os.path.dirname(os.path.abspath(__file__)), "pool-credits.json"))
@@ -1114,11 +1126,56 @@ class ThreadedHTTPServer(socketserver.ThreadingMixIn, http.server.HTTPServer):
 # ---- background refresher -------------------------------------------------
 
 def refresh_loop():
+    # v1.1.16+ watchdog: tracks the last time the pool's current_job was
+    # actually at the chain tip. If we fall behind for JOB_WATCHDOG_S
+    # without recovering, we exit() so systemd respawns us with a fresh
+    # daemon connection + a fresh RandomX dataset (recovers from both
+    # daemon-down and stale-template failure modes; see env-var docstring).
+    last_synced_ts = time.time()
+    consecutive_failures = 0
     while True:
+        # 1. Try to refresh the template. Errors are logged and counted,
+        #    but we don't bail here -- the watchdog below is the bail logic.
         try:
             refresh_job()
+            if current_job is not None:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
         except Exception as e:
+            consecutive_failures += 1
             print(f"[pool] refresh_loop error: {e}", file=sys.stderr)
+
+        # 2. Cross-check against chain tip. get_info is cheap and tells us
+        #    whether the daemon agrees with the template we just got. If
+        #    get_block_template returned a stale height (this morning's
+        #    bug), this comparison catches it; if the daemon is unreachable,
+        #    both calls fail and last_synced_ts simply doesn't advance.
+        try:
+            info = rpc("get_info")
+            chain_height = int(info["height"])
+            pool_height = current_job["height"] if current_job else 0
+            # get_block_template returns the next-block height, which equals
+            # chain.height (block count). >= covers a brief race where the
+            # pool fetched template first, then chain advanced before our
+            # get_info round-trip landed.
+            if pool_height >= chain_height:
+                last_synced_ts = time.time()
+        except Exception:
+            # Can't reach daemon for the cross-check. refresh_job() already
+            # logged the failure; don't double-log.
+            pass
+
+        # 3. Watchdog: have we been stuck too long?
+        stale_for = time.time() - last_synced_ts
+        if stale_for > JOB_WATCHDOG_S:
+            ph = current_job["height"] if current_job else "NONE"
+            print(f"[pool] WATCHDOG: template stuck for {int(stale_for)}s "
+                  f"(pool_height={ph}, consecutive_failures={consecutive_failures}). "
+                  f"Exiting for systemd restart.", file=sys.stderr)
+            sys.stderr.flush()
+            os._exit(1)
+
         time.sleep(TEMPLATE_REFRESH_S)
 
 
