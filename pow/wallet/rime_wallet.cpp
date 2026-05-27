@@ -73,16 +73,42 @@ extern "C" {
 RimeWallet *rime_wallet_recover(const char *path, const char *seed,
                                     const char *daemon_address,
                                     unsigned long long restore_height) {
+  // Verbose TLOG at every step so the launcher's logcat tells us
+  // exactly which call fails on Android. The catch(...) was eating
+  // ALL information about wallet2 init failures.
+  TLOG("recover: path='%s' seed_len=%d daemon='%s' restore_height=%llu",
+       path ? path : "(null)",
+       seed ? (int)std::strlen(seed) : -1,
+       daemon_address ? daemon_address : "(null)",
+       restore_height);
   try {
-    if (!path || !seed) return nullptr;
+    if (!path || !seed) { TLOG("recover: null path or seed"); return nullptr; }
     WalletManager *wm = WalletManagerFactory::getWalletManager();
-    if (!wm) return nullptr;
-    Wallet *w = wm->walletExists(path)
+    if (!wm) { TLOG("recover: getWalletManager() returned null"); return nullptr; }
+    TLOG("recover: have WalletManager");
+
+    bool exists = wm->walletExists(path);
+    TLOG("recover: walletExists=%d", (int)exists);
+
+    Wallet *w = exists
                   ? wm->openWallet(path, "", MAINNET)
                   : wm->recoveryWallet(path, "", seed, MAINNET,
                                        (uint64_t)restore_height);
+    TLOG("recover: %s returned %p",
+         exists ? "openWallet" : "recoveryWallet", (void*)w);
+    if (w) {
+      int st = 0; std::string err;
+      w->statusWithErrorString(st, err);
+      TLOG("recover: wallet status=%d err='%s'", st, err.c_str());
+    }
     return finish_open(wm, w, daemon_address);
-  } catch (...) { return nullptr; }
+  } catch (const std::exception &e) {
+    TLOG("recover: std::exception '%s'", e.what());
+    return nullptr;
+  } catch (...) {
+    TLOG("recover: unknown exception");
+    return nullptr;
+  }
 }
 
 RimeWallet *rime_wallet_open(const char *path, const char *password,

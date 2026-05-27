@@ -380,6 +380,22 @@ boost::asio::ssl::context ssl_options_t::create_context() const
 
   if (auth.private_key_path.empty())
   {
+#ifdef __ANDROID__
+    // On Android, KDAB's prebuilt OpenSSL 3 build can't generate a
+    // 4096-bit RSA key (RSA_generate_key_ex returns 0 with an empty
+    // error stack). Monero/epee generates this self-signed cert on
+    // every ssl_options_t::create_context() call defensively in case
+    // the context ends up serving INCOMING connections (the daemon
+    // RPC server path), but the Lattice Games launcher's wallet code
+    // is purely a CLIENT -- it makes outbound HTTPS calls to the
+    // daemon via this context and never accepts an inbound socket.
+    // Skipping cert generation here is therefore safe in our use
+    // case. If anything in the wallet code path ever tries to USE
+    // this context as a server it will fail at SSL handshake instead
+    // of here at context creation, which is the right failure mode.
+    MINFO("Android: skipping self-signed cert generation "
+          "(wallet is client-only, no inbound SSL needed)");
+#else
     EVP_PKEY *pkey;
     X509 *cert;
     bool ok = false;
@@ -405,6 +421,7 @@ boost::asio::ssl::context ssl_options_t::create_context() const
     EVP_PKEY_free(pkey);
 
     CHECK_AND_ASSERT_THROW_MES(ok, "Failed to use any generated certificate");
+#endif // __ANDROID__
   }
   else
     auth.use_ssl_certificate(ssl_context);
