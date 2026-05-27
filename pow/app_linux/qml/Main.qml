@@ -361,11 +361,30 @@ Window {
             }
             Text { text: "recipient address"; color: dim
                 font.family: root.monoFamily; font.pixelSize: 10 }
-            TextField {
-                id: addrField
-                Layout.fillWidth: true; color: root.white_
-                font { family: root.monoFamily; pixelSize: 11 }
-                background: Rectangle { color: root.card; radius: 6 }
+            // Paste button next to the address field. Qt6 Quick Controls
+            // dropped the default right-click context menu, so without
+            // this users would have to type the whole 95-char base58
+            // address by hand. Ctrl+V still works via Qt's TextInput
+            // shortcuts, but the explicit button is the obvious UX.
+            RowLayout {
+                Layout.fillWidth: true
+                spacing: 6
+                TextField {
+                    id: addrField
+                    Layout.fillWidth: true; color: root.white_
+                    font { family: root.monoFamily; pixelSize: 11 }
+                    background: Rectangle { color: root.card; radius: 6 }
+                    // Glaciem addresses are mixed-case base58; don't
+                    // let any platform IME auto-cap the leading 'R'
+                    // or offer word predictions for a random string.
+                    inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText
+                }
+                Button {
+                    text: "Paste"
+                    font.family: root.monoFamily
+                    font.pixelSize: 11
+                    onClicked: addrField.text = MinerEngine.pasteFromClipboard()
+                }
             }
             Text { text: "amount (GLAC)"; color: dim
                 font.family: root.monoFamily; font.pixelSize: 10 }

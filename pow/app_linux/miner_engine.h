@@ -122,6 +122,14 @@ public slots:
 
     void copyAddressToClipboard();    // utility for the UI
 
+    // Read the system clipboard's current text. Powers the "Paste"
+    // button next to the Send dialog's recipient field -- Qt6 Quick
+    // Controls dropped the default right-click context menu, so users
+    // can't right-click-paste; this gives QML an explicit hook to
+    // grab whatever's on the clipboard (typically a Glaciem address
+    // copied from a wallet or a chat).
+    Q_INVOKABLE QString pasteFromClipboard() const;
+
     // --- wallet ops (Send / Sweep / History) ---
     // wallet_api is single-threaded -- these enqueue a request that the poll
     // thread picks up next iteration, then emits the matching *Result signal.

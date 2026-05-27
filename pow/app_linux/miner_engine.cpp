@@ -906,6 +906,15 @@ void MinerEngine::copyAddressToClipboard() {
     if (cb) cb->setText(addr);
 }
 
+QString MinerEngine::pasteFromClipboard() const {
+    auto *cb = QGuiApplication::clipboard();
+    if (!cb) return {};
+    // Trim leading/trailing whitespace -- Glaciem addresses are 95
+    // chars of base58 and any newline a clipboard manager added
+    // would otherwise make wallet2 reject the input.
+    return cb->text().trimmed();
+}
+
 QString MinerEngine::walletFilePath() const {
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppLocalDataLocation);
     if (dir.isEmpty()) dir = QDir::homePath() + "/.glaciem";
