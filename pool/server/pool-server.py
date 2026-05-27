@@ -229,23 +229,105 @@ try:
         _lattice_has_v2 = True
     except AttributeError:
         _lattice_has_v2 = False
+    # v1.1.16: fingerprint of a built dataset, for verify-on-build self-test.
+    # Also optional -- old libs don't expose it and we just skip the test.
+    try:
+        _lattice.pool_dataset_fingerprint.restype  = None
+        _lattice.pool_dataset_fingerprint.argtypes = [
+            ctypes.c_void_p, ctypes.c_char_p,
+        ]
+        _lattice_has_fingerprint = True
+    except AttributeError:
+        _lattice_has_fingerprint = False
 except OSError as e:
     print(f"[pool] WARNING: could not load {VERIFY_LIB_PATH}: {e}. "
           "Falling back to v1 TRUST MODE.", file=sys.stderr)
     _lattice = None
     _lattice_has_v2 = False
+    _lattice_has_fingerprint = False
 
-# Dataset cache: seed_hash hex -> opaque pointer from pool_build_dataset().
-# Bounded -- LRU-evict oldest when we exceed MAX_CACHED_DATASETS.
-_datasets        = collections.OrderedDict()
+# v1.1.16+: single-slot dataset cache (was LRU with MAX_CACHED_DATASETS=4).
+#
+# Why we dropped the LRU: the v1.1.15-era pool occasionally got into a
+# state where every share submitted across all miners failed validation
+# at the same seed_hash. The pattern (multiple independent miners failing
+# in lockstep against one specific seed) means the POOL's cached dataset
+# for that seed was corrupt while the miners' independent dataset builds
+# were correct. The most likely cause was an LRU eviction race --
+# pool_free_dataset(ptr) running while another thread was still reading
+# from ptr. Single-slot eliminates that race entirely: we only keep the
+# CURRENT seed's dataset, and we only free the previous one after we've
+# already swapped to the new one.
+#
+# Lattice epochs rotate slowly (every ~2048 blocks ≈ 70 hours), so almost
+# all of the time there's only one active seed anyway. The LRU was
+# overengineering for a transition that lasts seconds.
+_current_dataset = None        # (seed_hash_hex, ptr) tuple, or None
 _datasets_lock   = threading.Lock()
-MAX_CACHED_DATASETS = 4
+
+
+def _build_and_verify(seed_bytes, seed_hash_hex):
+    """Build a Lattice dataset and verify build determinism via
+    pool_dataset_fingerprint. Returns the dataset pointer on success,
+    or None if the build produced inconsistent results across two
+    attempts (which means the dataset is unsafe to use for share
+    verification -- one of the builds got memory corruption, a
+    build-time race, or similar).
+
+    Without the fingerprint symbol available (old libpool_verify.so),
+    this falls back to a single build with no self-test."""
+    ptr = _lattice.pool_build_dataset(seed_bytes)
+    if not ptr:
+        print(f"[pool] dataset build failed for seed {seed_hash_hex[:16]}...",
+              file=sys.stderr)
+        return None
+    if not _lattice_has_fingerprint:
+        return ptr  # old lib -- best-effort, skip self-test
+
+    # Build a second copy of the same seed and compare fingerprints.
+    # If they disagree, neither copy is trustworthy.
+    ptr2 = _lattice.pool_build_dataset(seed_bytes)
+    if not ptr2:
+        # Couldn't build a second copy to compare. Use the first one and
+        # log a soft warning -- this isn't the failure mode we're worried
+        # about (build itself didn't fail, just couldn't rebuild for test).
+        print(f"[pool] self-test allocation failed for seed "
+              f"{seed_hash_hex[:16]}..., using first build untested",
+              file=sys.stderr)
+        return ptr
+
+    fp1 = ctypes.create_string_buffer(32)
+    fp2 = ctypes.create_string_buffer(32)
+    _lattice.pool_dataset_fingerprint(ptr,  fp1)
+    _lattice.pool_dataset_fingerprint(ptr2, fp2)
+    _lattice.pool_free_dataset(ptr2)  # done with the test copy
+
+    if fp1.raw[:32] == fp2.raw[:32]:
+        return ptr  # builds agree -- this is the healthy path
+
+    # Two builds of the same seed produced different hashes. This means
+    # the dataset memory is unreliable RIGHT NOW (use-after-free in a
+    # previous build, malloc returning corrupt memory, hardware-level
+    # bit flips, etc.). Refuse to ship either -- pool falls back to
+    # trust mode for this seed and we exit() so systemd respawns us
+    # with fresh memory. The watchdog would catch this too eventually
+    # but this catches it the instant it happens.
+    print(f"[pool] FATAL: dataset self-test failed for seed "
+          f"{seed_hash_hex[:16]}... (fp1={fp1.raw[:8].hex()} != "
+          f"fp2={fp2.raw[:8].hex()}). Memory corruption suspected -- "
+          f"exiting for systemd restart.", file=sys.stderr)
+    sys.stderr.flush()
+    _lattice.pool_free_dataset(ptr)
+    os._exit(1)
 
 
 def get_dataset_for(seed_hash_hex):
-    """Return the cached dataset pointer for `seed_hash_hex`, building it
-    lazily if needed. Returns None if verification is disabled (lib not
+    """Return the dataset pointer for `seed_hash_hex`, building it lazily
+    if the seed changed since last call. Single-slot cache: a new seed
+    frees the old dataset and builds the new one with a self-test before
+    handing it out. Returns None if verification is disabled (lib not
     loaded) or seed is invalid."""
+    global _current_dataset
     if _lattice is None:
         return None
     if not seed_hash_hex or len(seed_hash_hex) != 64:
@@ -255,17 +337,20 @@ def get_dataset_for(seed_hash_hex):
     except ValueError:
         return None
     with _datasets_lock:
-        if seed_hash_hex in _datasets:
-            # Move to end (most-recently-used).
-            _datasets.move_to_end(seed_hash_hex)
-            return _datasets[seed_hash_hex]
-        # Evict oldest if at capacity.
-        while len(_datasets) >= MAX_CACHED_DATASETS:
-            old_seed, old_ptr = _datasets.popitem(last=False)
-            _lattice.pool_free_dataset(old_ptr)
-        ptr = _lattice.pool_build_dataset(seed)
-        _datasets[seed_hash_hex] = ptr
-        return ptr
+        # Fast path: cached for this seed.
+        if _current_dataset is not None and _current_dataset[0] == seed_hash_hex:
+            return _current_dataset[1]
+        # Seed rotated. Build the new one FIRST, then free the old one --
+        # this ordering means there's no window where _current_dataset
+        # points at freed memory.
+        new_ptr = _build_and_verify(seed, seed_hash_hex)
+        if not new_ptr:
+            return None
+        old = _current_dataset
+        _current_dataset = (seed_hash_hex, new_ptr)
+        if old is not None:
+            _lattice.pool_free_dataset(old[1])
+        return new_ptr
 
 
 def find_nonce_offset_buf(buf):

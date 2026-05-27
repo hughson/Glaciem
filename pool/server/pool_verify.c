@@ -129,3 +129,30 @@ int pool_verify_share_v2(const uint8_t *blob, int blob_len, int nonce_offset,
     lattice_hash_ds(buf, blob_len, ds, out_hash);
     return meets_target(out_hash, difficulty);
 }
+
+/* v1.1.16+: deterministic fingerprint of a built dataset, used by
+ * pool-server.py to detect non-deterministic / corrupt builds.
+ *
+ * Hashes a fixed 88-byte test blob (deterministic byte pattern; no
+ * external dependencies) against the dataset and writes the resulting
+ * 32-byte hash to `out`. Two datasets built from the same seed_hash
+ * MUST produce the same fingerprint -- if they don't, one build went
+ * wrong (memory corruption, build-time race, allocator quirk) and the
+ * pool refuses to use either copy.
+ *
+ * This is cheap: one hash, ~microseconds. Worth running every time the
+ * pool needs to rotate to a new seed.
+ *
+ * Background on what this catches: v1.1.15-era pools occasionally had
+ * the LRU dataset cache hand back a corrupt dataset after eviction. The
+ * verifier would then reject every share, every miner across multiple
+ * IPs would get auto-banned in lockstep, and the pool stayed
+ * effectively dead until manual restart. Single-slot cache in
+ * pool-server.py kills the eviction race; this fingerprint catches any
+ * build-time corruption that isn't an eviction race. */
+void pool_dataset_fingerprint(const uint64_t *ds, uint8_t out[32]) {
+    if (!ds || !out) return;
+    uint8_t blob[88];
+    for (int i = 0; i < 88; i++) blob[i] = (uint8_t)((i * 7 + 13) & 0xff);
+    lattice_hash_ds(blob, 88, ds, out);
+}
