@@ -49,6 +49,8 @@ class MinerEngine : public QObject {
     Q_PROPERTY(quint64 targetHeight READ targetHeight NOTIFY statsChanged)
     Q_PROPERTY(QString walletAddress READ walletAddress NOTIFY statsChanged)
     Q_PROPERTY(bool hasWallet READ hasWallet NOTIFY statsChanged)
+    // Base URL for *.glac name resolution (env RIME_GLAC_RESOLVER, else prod).
+    Q_PROPERTY(QString glacResolver READ glacResolver CONSTANT)
 
     // --- settings ---
     Q_PROPERTY(QString nodeHost READ nodeHost WRITE setNodeHost NOTIFY nodeChanged)
@@ -88,6 +90,7 @@ public:
     quint64 targetHeight() const;
     QString walletAddress() const;
     bool hasWallet() const;
+    QString glacResolver() const;
 
     QString nodeHost() const;
     int nodePort() const;

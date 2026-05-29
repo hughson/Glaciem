@@ -16,6 +16,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <sys/sysctl.h>
 
 #include "miner_core.h"
@@ -375,6 +376,28 @@ static NSDictionary *json_rpc(NSString *method, id params) {
    preserved across the swap. */
 #define WALLET_FAILOVER_THRESHOLD 3   /* consecutive disconnects before swap */
 
+/* Debug-build wallet/poll tracing. Writes to RIME_WALLET_LOG (default
+ * /tmp/rime-wallet-debug.log), the same file the wallet core logs into, so
+ * open/recover + per-cycle poll state interleave in one timeline. Compiles to
+ * nothing unless RIME_WALLET_DEBUG is defined (release builds are silent). */
+#if defined(RIME_WALLET_DEBUG)
+static void wdbg(const char *fmt, ...) {
+  const char *path = getenv("RIME_WALLET_LOG");
+  if (!path || !path[0]) path = "/tmp/rime-wallet-debug.log";
+  FILE *f = fopen(path, "a");
+  if (!f) return;
+  struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+  struct tm tmv; time_t s = ts.tv_sec; localtime_r(&s, &tmv);
+  char tbuf[16]; strftime(tbuf, sizeof tbuf, "%H:%M:%S", &tmv);
+  fprintf(f, "[%s.%03ld][poll] ", tbuf, ts.tv_nsec / 1000000);
+  va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+  fputc('\n', f);
+  fclose(f);
+}
+#else
+#define wdbg(...) ((void)0)
+#endif
+
 /* ---- embedded-wallet poll: address + balance + sync state ---- */
 static void *wallet_poll(void *arg) {
   (void)arg;
@@ -382,6 +405,11 @@ static void *wallet_poll(void *arg) {
   int disconnect_count = 0;
   int endpoint_idx = 0;       /* index into the snapshot order */
   while (1) {
+    /* Adaptive cadence: poll quickly (2s) while we're still opening,
+       connecting or scanning so the UI fills in fast; relax to 20s once the
+       wallet is connected AND fully synced (block time is ~120s, so 20s is
+       plenty and keeps proxy traffic low). */
+    useconds_t poll_us = 20000000;
     RimeWallet *w;
     pthread_mutex_lock(&g_lock);
     w = g_wallet;
@@ -428,6 +456,12 @@ static void *wallet_poll(void *arg) {
       g_stats.wallet_syncing   = (conn && !synced) ? 1 : 0;
       pthread_mutex_unlock(&g_lock);
 
+      wdbg("cycle: conn=%d synced=%d walletH=%llu daemonH=%llu bal=%llu syncing=%d disc=%d",
+           conn, synced, (unsigned long long)wht, (unsigned long long)tgt,
+           (unsigned long long)bal, (conn && !synced) ? 1 : 0, disconnect_count);
+
+      if (!conn || !synced) poll_us = 2000000;   /* still connecting/scanning -> poll fast */
+
       /* Failover: after N consecutive disconnects, snapshot the peer
          cache (seeds + discovered, in score order) and rotate to the
          next entry. The wallet's keys, balance, and scanned height are
@@ -442,20 +476,22 @@ static void *wallet_poll(void *arg) {
           char daemon[200];
           snprintf(daemon, sizeof daemon, "%s:%d",
                    snap[endpoint_idx].host, snap[endpoint_idx].port);
-          rime_wallet_set_daemon(w, daemon);
+          int sd = rime_wallet_set_daemon(w, daemon);
+          wdbg("FAILOVER -> %s  set_daemon=%d", daemon, sd);
         }
         disconnect_count = 0;
       }
     } else {
+      wdbg("no wallet handle yet");
       pthread_mutex_lock(&g_lock);
       g_stats.wallet_connected = 0;
       pthread_mutex_unlock(&g_lock);
+      poll_us = 2000000;   /* no wallet yet -> check often so a freshly-opened one shows fast */
     }
-    /* v1.1.3: bumped 4s -> 20s. Block time is ~120s so a 20s refresh
-       still gives a live-feeling UI while cutting /getblocks.bin traffic
-       to the public proxy ~5x. Send/sweep paths can still drive an
-       immediate refresh through the same thread if needed. */
-    usleep(20000000);  /* poll every ~20s */
+    /* v1.1.3: 20s base cadence (block time ~120s) cuts /getblocks.bin traffic;
+       v1.1.17: drop to 2s while opening/connecting/syncing for a responsive
+       first paint. Send/sweep can still drive an immediate refresh. */
+    usleep(poll_us);
   }
   return NULL;
 }
@@ -476,9 +512,20 @@ static void *open_wallet_thread(void *arg) {
   if (old) rime_wallet_close(old);
   char daemon[200];
   snprintf(daemon, sizeof daemon, "%s:%d", host, port);
+  wdbg("open_wallet_thread: seed_len=%d daemon=%s -> rime_wallet_recover (blocking)...",
+       seed ? (int)strlen(seed) : -1, daemon);
   RimeWallet *w = rime_wallet_recover(path, seed ? seed : "", daemon, 0);
+  wdbg("open_wallet_thread: rime_wallet_recover returned %s -- publishing g_wallet",
+       w ? "OK" : "NULL");
+  /* Publish the address the instant the wallet opens -- it's pure key
+   * derivation, needs no chain scan, so the UI can show it (and enable mining)
+   * right away instead of waiting up to a full poll cycle. */
+  char addr0[160] = "";
+  if (w) rime_wallet_address(w, addr0, sizeof addr0);
   pthread_mutex_lock(&g_lock);
   g_wallet = w;
+  strncpy(g_wallet_addr, addr0, sizeof(g_wallet_addr)-1);
+  g_wallet_addr[sizeof(g_wallet_addr)-1] = 0;
   pthread_mutex_unlock(&g_lock);
   free(seed);
   return NULL;

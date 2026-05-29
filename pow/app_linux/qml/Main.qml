@@ -351,7 +351,45 @@ Window {
         background: Rectangle { color: bg; border.color: card; radius: 12 }
         title: "SEND GLAC"
         property string resultText: ""
-        onOpened: { addrField.text = ""; amountField.text = ""; resultText = "" }
+        property bool resolving: false
+        property string pendingAddr: ""
+        property string pendingName: ""
+        property real pendingAmount: 0
+        onOpened: {
+            addrField.text = ""; amountField.text = ""; resultText = ""
+            resolving = false; pendingAddr = ""; pendingName = ""; pendingAmount = 0
+        }
+        // Send to a typed address, or resolve a *.glac name first (then the
+        // confirm block below makes the user verify the resolved address).
+        function performSend() {
+            var raw = addrField.text.trim();
+            var amt = parseFloat(amountField.text) || 0;
+            if (raw.toLowerCase().endsWith(".glac")) {
+                sendDialog.resolving = true;
+                sendDialog.resultText = "resolving " + raw + "…";
+                var xhr = new XMLHttpRequest();
+                xhr.onreadystatechange = function() {
+                    if (xhr.readyState === XMLHttpRequest.DONE) {
+                        sendDialog.resolving = false;
+                        var addr = "";
+                        try { var o = JSON.parse(xhr.responseText); if (o && o.address) addr = o.address; } catch (e) {}
+                        if (addr === "") {
+                            sendDialog.resultText = "couldn't resolve " + raw + " — name not found";
+                        } else {
+                            sendDialog.resultText = "";
+                            sendDialog.pendingName = raw;
+                            sendDialog.pendingAmount = amt;
+                            sendDialog.pendingAddr = addr;   // shows the confirm block
+                        }
+                    }
+                };
+                xhr.open("GET", MinerEngine.glacResolver + "/resolve/" + raw.toLowerCase());
+                xhr.send();
+            } else {
+                sendDialog.resultText = "sending…";
+                MinerEngine.requestSend(raw, amt);
+            }
+        }
         contentItem: ColumnLayout {
             spacing: 10
             Text {
@@ -359,7 +397,7 @@ Window {
                 text: "Unlocked balance: " + (MinerEngine.unlockedBalance / 1e12).toFixed(6) + " GLAC"
                 font { family: root.monoFamily; pixelSize: 10 }
             }
-            Text { text: "recipient address"; color: dim
+            Text { text: "recipient address or name.glac"; color: dim
                 font.family: root.monoFamily; font.pixelSize: 10 }
             // Paste button next to the address field. Qt6 Quick Controls
             // dropped the default right-click context menu, so without
@@ -405,6 +443,36 @@ Window {
                 wrapMode: Text.WordWrap
                 font { family: root.monoFamily; pixelSize: 10 }
             }
+            // *.glac resolved -- show the real destination and require a confirm
+            ColumnLayout {
+                Layout.fillWidth: true
+                visible: sendDialog.pendingAddr.length > 0
+                spacing: 6
+                Text { text: sendDialog.pendingName + " resolves to"; color: dim
+                    font { family: root.monoFamily; pixelSize: 10 } }
+                Text {
+                    Layout.fillWidth: true; wrapMode: Text.WrapAnywhere
+                    text: sendDialog.pendingAddr; color: root.amber
+                    font { family: root.monoFamily; pixelSize: 11 }
+                }
+                Text { text: "Send " + sendDialog.pendingAmount.toFixed(6) + " GLAC to this address?"
+                    color: root.white_; font { family: root.monoFamily; pixelSize: 11; bold: true } }
+                RowLayout {
+                    Layout.fillWidth: true; spacing: 6
+                    Button {
+                        text: "CANCEL"; Layout.fillWidth: true; font.family: root.monoFamily
+                        onClicked: { sendDialog.pendingAddr = ""; sendDialog.resultText = "send cancelled" }
+                    }
+                    Button {
+                        text: "CONFIRM SEND"; Layout.fillWidth: true; font.family: root.monoFamily
+                        onClicked: {
+                            sendDialog.resultText = "sending…";
+                            MinerEngine.requestSend(sendDialog.pendingAddr, sendDialog.pendingAmount);
+                            sendDialog.pendingAddr = "";
+                        }
+                    }
+                }
+            }
             Text {
                 Layout.fillWidth: true; wrapMode: Text.WordWrap; color: dim
                 text: "Mined coins won't send (\"not enough outputs\")? Sweep them into spendable form:"
@@ -414,10 +482,8 @@ Window {
         footer: DialogButtonBox {
             background: Rectangle { color: bg }
             Button { text: "SEND"
-                onClicked: {
-                    sendDialog.resultText = "sending…";
-                    MinerEngine.requestSend(addrField.text, parseFloat(amountField.text) || 0);
-                }
+                enabled: !sendDialog.resolving && sendDialog.pendingAddr === ""
+                onClicked: sendDialog.performSend()
             }
             Button { text: "SWEEP UNMIXABLE"
                 onClicked: { sendDialog.resultText = "sweeping…"; MinerEngine.requestSweep() }

@@ -598,6 +598,7 @@ void WalletPollThread::run() {
                                       Q_ARG(QString, QString::fromUtf8(buf)));
         }
 
+        int pollIters = 200;   // 20s default; 2s while opening/connecting/syncing
         if (w) {
             // publish cached address + balance first (instant, no chain scan)
             char addr[160] = {0};
@@ -636,6 +637,8 @@ void WalletPollThread::run() {
                 m_e->m_walletSyncing = (conn && !synced);
             }
 
+            if (!conn || !synced) pollIters = 20;   // still connecting/scanning -> poll fast
+
             // Failover: after N consecutive disconnects, snapshot the peer
             // cache (seeds + discovered, in score order) and rotate to the
             // next entry. Wallet keys/balance/height survive the swap.
@@ -656,11 +659,12 @@ void WalletPollThread::run() {
         } else {
             QMutexLocker lk(&m_e->m_lock);
             m_e->m_walletConnected = false;
+            pollIters = 20;   // no wallet yet -> check often so a freshly-opened one shows fast
         }
-        // v1.1.4: ~20s between refreshes (was 4s). Block time is ~120s
-        // so a 20s refresh keeps the UI live-feeling while cutting
-        // /getblocks.bin traffic to the public RPC proxy ~5x.
-        for (int i = 0; i < 200 && !m_stop; i++) msleep(100);
+        // v1.1.4: 20s base cadence (block time ~120s) cuts /getblocks.bin
+        // traffic; v1.1.17: 2s while opening/connecting/syncing for responsive
+        // first paint.
+        for (int i = 0; i < pollIters && !m_stop; i++) msleep(100);
     }
 }
 
@@ -735,6 +739,13 @@ int MinerEngine::nodePort() const { QMutexLocker lk(&m_lock); return m_nodePort;
 bool MinerEngine::hasWallet() const {
     QMutexLocker lk(&m_lock);
     return !m_walletAddress.isEmpty();
+}
+
+QString MinerEngine::glacResolver() const {
+    // Where the Send field resolves *.glac names. Override with RIME_GLAC_RESOLVER
+    // (e.g. http://localhost:8787 against a local worker); defaults to prod.
+    return qEnvironmentVariable("RIME_GLAC_RESOLVER",
+                                QStringLiteral("https://names.glaciem.io"));
 }
 
 QString MinerEngine::device() const {
@@ -878,6 +889,13 @@ void MinerEngine::openWallet(const QString &seed) {
     {
         QMutexLocker lk(&m_lock);
         m_wallet = w;
+        if (w) {
+            // publish the address immediately -- key derivation, no chain scan,
+            // so the UI shows it (and mining can start) without waiting a poll cycle
+            char a[160] = {0};
+            rime_wallet_address(w, a, sizeof a);
+            m_walletAddress = QString::fromLatin1(a);
+        }
     }
     emit statsChanged();
 }

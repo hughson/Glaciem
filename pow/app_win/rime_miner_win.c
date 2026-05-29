@@ -261,6 +261,59 @@ static void try_discover_peers(const PeerEntry *source) {
   peer_cache_reset_discovery_counter(g_peers);
 }
 
+/* Resolve a *.glac name to a GLAC address via the public name service:
+   GET https://names.glaciem.io/resolve/<name> -> {"address":"R..."}.
+   Writes the address into `out` (NUL-terminated) and returns 1; returns 0 if
+   the name doesn't resolve or the host is unreachable. Blocking. */
+#define GLAC_RESOLVER_HOST "names.glaciem.io"
+static int resolve_glac(const char *name, char *out, int out_sz) {
+  if (out_sz > 0) out[0] = 0;
+  char p8[256];
+  snprintf(p8, sizeof p8, "/resolve/%s", name);
+  wchar_t path[320];
+  MultiByteToWideChar(CP_UTF8, 0, p8, -1, path, 256);
+  wchar_t *whost = host_to_wide(GLAC_RESOLVER_HOST);
+  if (!whost) return 0;
+  int ok = 0;
+  HINTERNET hs = WinHttpOpen(L"RimeMiner/1.0", WINHTTP_ACCESS_TYPE_NO_PROXY,
+                             WINHTTP_NO_PROXY_NAME, WINHTTP_NO_PROXY_BYPASS, 0);
+  if (hs) {
+    WinHttpSetTimeouts(hs, 8000, 8000, 8000, 8000);
+    HINTERNET hc = WinHttpConnect(hs, whost, (INTERNET_PORT)443, 0);
+    if (hc) {
+      HINTERNET hr = WinHttpOpenRequest(hc, L"GET", path, NULL,
+          WINHTTP_NO_REFERER, WINHTTP_DEFAULT_ACCEPT_TYPES, WINHTTP_FLAG_SECURE);
+      if (hr) {
+        char resp[1024] = {0};
+        if (WinHttpSendRequest(hr, WINHTTP_NO_ADDITIONAL_HEADERS, 0,
+                               WINHTTP_NO_REQUEST_DATA, 0, 0, 0) &&
+            WinHttpReceiveResponse(hr, NULL)) {
+          DWORD status = 0, slen = sizeof status;
+          WinHttpQueryHeaders(hr, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
+                              NULL, &status, &slen, NULL);
+          if (status >= 200 && status < 300) {
+            int got = 0; DWORD avail = 0;
+            while (WinHttpQueryDataAvailable(hr, &avail) && avail > 0) {
+              if (got + (int)avail > (int)sizeof resp - 1) avail = (DWORD)((int)sizeof resp - 1 - got);
+              if ((int)avail <= 0) break;
+              DWORD rd = 0;
+              if (!WinHttpReadData(hr, resp + got, avail, &rd) || rd == 0) break;
+              got += (int)rd;
+            }
+            resp[got] = 0;
+            if (got > 0) { json_get_str(resp, "address", out, out_sz); if (out[0]) ok = 1; }
+          }
+        }
+        WinHttpCloseHandle(hr);
+      }
+      WinHttpCloseHandle(hc);
+    }
+    WinHttpCloseHandle(hs);
+  }
+  free_wide(whost);
+  return ok;
+}
+
 /* JSON-RPC: snapshot the cache, try endpoints in order, update scores. */
 static int http_post(int port, const char *body, char *resp, int resp_sz) {
   (void)port;
@@ -854,6 +907,7 @@ static unsigned __stdcall wallet_thread(void *arg) {
       MessageBoxA(g_hwnd, hist, "Glaciem Miner - History", MB_OK|MB_ICONINFORMATION);
     }
 
+    int poll_iters = 200;   /* 20s default; 2s while connecting/syncing */
     if (g_wallet) {
       char addr[160] = "";
       /* publish cached address + balance first (available immediately) */
@@ -889,6 +943,8 @@ static unsigned __stdcall wallet_thread(void *arg) {
       snprintf(g_sh.wallet_addr,sizeof g_sh.wallet_addr,"%s",addr);
       LeaveCriticalSection(&g_sh.cs);
 
+      if (!conn || !synced) poll_iters = 20;   /* still connecting/scanning -> poll fast */
+
       /* Failover: after N consecutive disconnects, snapshot the peer
          cache (seeds + discovered, in score order) and rotate. */
       if (conn) {
@@ -909,12 +965,12 @@ static unsigned __stdcall wallet_thread(void *arg) {
       EnterCriticalSection(&g_sh.cs);
       g_sh.wallet_connected = 0;
       LeaveCriticalSection(&g_sh.cs);
+      poll_iters = 20;   /* no wallet yet -> check often so a freshly-opened one shows fast */
     }
-    /* v1.1.4: ~20s between refreshes (was 4s). Block time is ~120s so
-       the wallet still feels live in the UI, but /getblocks.bin traffic
-       to the public RPC proxy drops ~5x. Send/sweep/history paths still
-       wake the loop immediately via the pending flags. */
-    for (int i=0;i<200 && !g_send_pending && !g_sweep_pending && !g_history_pending && !g_seed_pending;i++) Sleep(100);
+    /* v1.1.4: 20s base cadence (block time ~120s) cuts /getblocks.bin traffic;
+       v1.1.17: 2s while connecting/syncing for a responsive first paint.
+       Send/sweep/history/seed paths still wake the loop immediately. */
+    for (int i=0;i<poll_iters && !g_send_pending && !g_sweep_pending && !g_history_pending && !g_seed_pending;i++) Sleep(100);
   }
   return 0;
 }
@@ -1067,13 +1123,20 @@ static void paint(HWND hwnd) {
   HBRUSH cb2=CreateSolidBrush(C_CARD); FillRect(dc,&card2,cb2); DeleteObject(cb2);
   draw_text(dc,"WALLET",40,362,DW-80,g_fSmall,C_DIM,DT_LEFT);
   {
-    const char *wst = !s.wallet_connected ? "NO WALLET"
+    /* A wallet exists the moment its address is published (key derivation,
+       no chain scan). "connecting" = open but not yet reached the daemon. */
+    int hasw = s.wallet_addr[0] != '\0';
+    int connecting = hasw && !s.wallet_connected;
+    const char *wst = !hasw ? "NO WALLET"
+                    : connecting ? "CONNECTING..."
                     : (s.wallet_syncing ? "SYNCING" : "CONNECTED");
-    COLORREF wsc = !s.wallet_connected ? C_DIM
-                 : (s.wallet_syncing ? C_AMBER : C_GREEN);
+    COLORREF wsc = !hasw ? C_DIM
+                 : (connecting || s.wallet_syncing) ? C_AMBER : C_GREEN;
     draw_text(dc,wst,40,362,DW-80,g_fSmall,wsc,DT_RIGHT);
   }
-  if (s.wallet_syncing) {
+  if (s.wallet_addr[0] && !s.wallet_connected) {
+    draw_text(dc,"connecting...",40,392,DW-80,g_fMid,C_AMBER,DT_LEFT);
+  } else if (s.wallet_syncing) {
     draw_text(dc,"catching up...",40,386,DW-80,g_fMid,C_AMBER,DT_LEFT);
     unsigned long long pct = s.target_height
         ? (unsigned long long)(s.wallet_height*100/s.target_height) : 0;
@@ -1301,7 +1364,7 @@ static LRESULT CALLBACK SendProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
   switch (m) {
   case WM_CREATE: {
     HINSTANCE hi=((LPCREATESTRUCT)lp)->hInstance;
-    CreateWindowExA(0,"STATIC","Recipient address:",WS_CHILD|WS_VISIBLE,
+    CreateWindowExA(0,"STATIC","Recipient address or name.glac:",WS_CHILD|WS_VISIBLE,
                     16,12,380,18,h,NULL,hi,NULL);
     CreateWindowExA(WS_EX_CLIENTEDGE,"EDIT","",
                     WS_CHILD|WS_VISIBLE|ES_AUTOHSCROLL,
@@ -1334,8 +1397,35 @@ static LRESULT CALLBACK SendProc(HWND h, UINT m, WPARAM wp, LPARAM lp) {
                     "Glaciem Miner - Send",MB_OK|MB_ICONWARNING);
         return 0;
       }
+      /* If the recipient is a *.glac name, resolve it to an address and make
+         the user confirm the resolved address before anything is broadcast. */
+      char dest[200];
+      snprintf(dest,sizeof dest,"%s",addr);
+      size_t al=strlen(addr);
+      int is_glac = al>5 && addr[al-5]=='.'
+                 && (addr[al-4]|32)=='g' && (addr[al-3]|32)=='l'
+                 && (addr[al-2]|32)=='a' && (addr[al-1]|32)=='c';
+      if (is_glac) {
+        char lname[200];
+        for (size_t i=0;i<=al && i<sizeof lname;i++)
+          lname[i] = (addr[i]>='A'&&addr[i]<='Z') ? (char)(addr[i]+32) : addr[i];
+        char resolved[200]={0};
+        if (!resolve_glac(lname, resolved, (int)sizeof resolved)) {
+          char m[260];
+          snprintf(m,sizeof m,"Couldn't resolve %s -- name not found.",addr);
+          MessageBoxA(h,m,"Glaciem Miner - Send",MB_OK|MB_ICONWARNING);
+          return 0;
+        }
+        char m[420];
+        snprintf(m,sizeof m,"%s resolves to:\n\n%s\n\nSend %.6f GLAC to this address?",
+                 addr, resolved, a);
+        if (MessageBoxA(h,m,"Glaciem Miner - Confirm send",
+                        MB_YESNO|MB_ICONQUESTION)!=IDYES)
+          return 0;
+        snprintf(dest,sizeof dest,"%s",resolved);
+      }
       EnterCriticalSection(&g_sh.cs);
-      snprintf(g_send_addr,sizeof g_send_addr,"%s",addr);
+      snprintf(g_send_addr,sizeof g_send_addr,"%s",dest);
       g_send_amount=a;
       LeaveCriticalSection(&g_sh.cs);
       g_send_pending=1;                  /* the wallet poll thread sends it */

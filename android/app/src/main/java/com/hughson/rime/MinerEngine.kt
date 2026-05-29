@@ -110,6 +110,13 @@ class MinerEngine(private val rpc: RpcClient) {
             val daemon = "${rpc.nodeHost}:${rpc.nodePort}"
             val h = WalletNative.recover(path, seed, daemon, 0L)
             walletHandle = h
+            if (h != 0L) {
+                // publish the address immediately -- key derivation, no chain
+                // scan, so the UI shows it (and mining can start) without
+                // waiting for the next poll cycle
+                walletAddr = WalletNative.address(h)
+                publish()
+            }
             android.util.Log.i(TAG, "openWallet ${if (h != 0L) "ok" else "FAILED"}")
         }.apply { isDaemon = true }.start()
     }
@@ -167,6 +174,22 @@ class MinerEngine(private val rpc: RpcClient) {
         val h = walletHandle
         if (h == 0L) return "Wallet not ready yet"
         return WalletNative.history(h)
+    }
+
+    /** Resolve a *.glac name to a GLAC address via the name service. Returns the
+     *  address, or null if it doesn't resolve (unknown name / unreachable).
+     *  Blocking -- call off the UI thread. */
+    fun resolveGlac(name: String): String? {
+        return try {
+            val url = java.net.URL("$GLAC_RESOLVER/resolve/${name.lowercase()}")
+            val conn = (url.openConnection() as java.net.HttpURLConnection).apply {
+                connectTimeout = 8000; readTimeout = 8000; requestMethod = "GET"
+            }
+            val body = conn.inputStream.bufferedReader().use { it.readText() }
+            JSONObject(body).optString("address", "").ifEmpty { null }
+        } catch (e: Throwable) {
+            null   // non-2xx (unknown name) or network error -> "couldn't resolve"
+        }
     }
 
     @Synchronized
@@ -250,10 +273,12 @@ class MinerEngine(private val rpc: RpcClient) {
                 walletOk = false
             }
             publish()
-            // v1.1.4: 4s -> 20s wallet refresh. Block time is ~120s so
-            // this still keeps the UI live-feeling while cutting
-            // /getblocks.bin traffic to the public RPC proxy ~5x.
-            try { Thread.sleep(20_000) } catch (e: InterruptedException) { return }
+            // v1.1.4: 20s base cadence (block time ~120s) cuts /getblocks.bin
+            // traffic; v1.1.17: drop to 2s while opening/connecting/syncing (or
+            // when no wallet is open yet) so the UI fills in fast.
+            val healthy = h != 0L && walletOk && !walletSyncing
+            try { Thread.sleep(if (healthy) 20_000 else 2_000) }
+            catch (e: InterruptedException) { return }
         }
     }
 
@@ -483,6 +508,11 @@ class MinerEngine(private val rpc: RpcClient) {
 
     companion object {
         private const val TAG = "Rime"
+
+        /** Base URL for *.glac name resolution. Public name service host; the
+         *  Send field appends /resolve/<name>.glac. (Live once names.glaciem.io
+         *  is deployed; until then names won't resolve on-device.) */
+        private const val GLAC_RESOLVER = "https://names.glaciem.io"
 
         /** nonces hashed per core per batch. Matches the Windows miner's value;
          *  small enough to keep UI updates responsive, large enough to amortise

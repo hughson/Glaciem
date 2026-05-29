@@ -11,6 +11,8 @@
 #include <cstdio>
 #include <cstring>
 #include <ctime>
+#include <cstdarg>
+#include <cstdlib>
 #include <new>
 #include <set>
 #include <string>
@@ -21,6 +23,25 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #define TLOG(...) __android_log_print(ANDROID_LOG_INFO, "RimeWallet", __VA_ARGS__)
+#elif defined(RIME_WALLET_DEBUG)
+/* Desktop debug build: route the same verbose diagnostics that Android gets
+ * over logcat into a plain log file we can read back. Off in release builds
+ * (TLOG compiles to nothing unless RIME_WALLET_DEBUG is defined). The path is
+ * RIME_WALLET_LOG, defaulting to /tmp/rime-wallet-debug.log. */
+static void rime_dbg_log(const char *fmt, ...) {
+  const char *path = getenv("RIME_WALLET_LOG");
+  if (!path || !path[0]) path = "/tmp/rime-wallet-debug.log";
+  FILE *f = fopen(path, "a");
+  if (!f) return;
+  struct timespec ts; clock_gettime(CLOCK_REALTIME, &ts);
+  struct tm tmv; time_t s = ts.tv_sec; localtime_r(&s, &tmv);
+  char tbuf[16]; strftime(tbuf, sizeof tbuf, "%H:%M:%S", &tmv);
+  fprintf(f, "[%s.%03ld][core] ", tbuf, ts.tv_nsec / 1000000);
+  va_list ap; va_start(ap, fmt); vfprintf(f, fmt, ap); va_end(ap);
+  fputc('\n', f);
+  fclose(f);
+}
+#define TLOG(...) rime_dbg_log(__VA_ARGS__)
 #else
 #define TLOG(...) ((void)0)
 #endif
@@ -87,15 +108,34 @@ RimeWallet *rime_wallet_recover(const char *path, const char *seed,
     if (!wm) { TLOG("recover: getWalletManager() returned null"); return nullptr; }
     TLOG("recover: have WalletManager");
 
-    bool exists = wm->walletExists(path);
-    TLOG("recover: walletExists=%d", (int)exists);
-
-    Wallet *w = exists
-                  ? wm->openWallet(path, "", MAINNET)
-                  : wm->recoveryWallet(path, "", seed, MAINNET,
-                                       (uint64_t)restore_height);
-    TLOG("recover: %s returned %p",
-         exists ? "openWallet" : "recoveryWallet", (void*)w);
+    // Branch on INTENT, not on a file probe. A non-empty seed means the caller
+    // wants THIS seed's wallet (generate / restore); an empty seed means "open
+    // whatever already exists" (app relaunch). The old code keyed off
+    // walletExists() (which only checks the .keys file). That raced with the
+    // previous wallet's store-on-close re-writing the cache file: walletExists
+    // could read false (keys gone) while the cache file was back on disk, so it
+    // took the recoveryWallet() branch -- which then failed with "file already
+    // exists" and returned NULL, leaving the app with no wallet until a restart
+    // (bug: generate/restore intermittently doesn't sync). Fix: when creating
+    // from a seed, wipe any stale wallet files first so recoveryWallet() always
+    // starts clean.
+    bool want_create = (seed[0] != '\0');
+    Wallet *w = nullptr;
+    if (want_create) {
+      std::string p(path);
+      std::remove(p.c_str());                 // cache file
+      std::remove((p + ".keys").c_str());     // keys file
+      std::remove((p + ".address.txt").c_str());
+      TLOG("recover: create-from-seed, cleaned stale files at '%s'", path);
+      w = wm->recoveryWallet(path, "", seed, MAINNET, (uint64_t)restore_height);
+      TLOG("recover: recoveryWallet returned %p", (void*)w);
+    } else {
+      bool exists = wm->walletExists(path);
+      TLOG("recover: open-existing, walletExists=%d", (int)exists);
+      if (!exists) { TLOG("recover: nothing to open"); return nullptr; }
+      w = wm->openWallet(path, "", MAINNET);
+      TLOG("recover: openWallet returned %p", (void*)w);
+    }
     if (w) {
       int st = 0; std::string err;
       w->statusWithErrorString(st, err);

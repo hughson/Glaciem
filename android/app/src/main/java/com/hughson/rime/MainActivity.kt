@@ -468,6 +468,8 @@ private fun WalletPanel(stats: MinerStats, onSend: () -> Unit, onReceive: () -> 
     val connected = stats.walletConnected
     val syncing = stats.walletSyncing
     val addr = stats.walletAddress
+    val hasWallet = addr.isNotEmpty()
+    val connecting = hasWallet && !connected   // open but not yet reached the daemon
     val shortAddr = when {
         addr.isEmpty() -> "—"
         addr.length > 24 -> addr.take(11) + "…" + addr.takeLast(11)
@@ -486,19 +488,25 @@ private fun WalletPanel(stats: MinerStats, onSend: () -> Unit, onReceive: () -> 
             Spacer(Modifier.weight(1f))
             Text(
                 when {
-                    !connected -> "NO WALLET"
+                    !hasWallet -> "NO WALLET"
+                    connecting -> "CONNECTING…"
                     syncing -> "SYNCING"
                     else -> "CONNECTED"
                 },
                 color = when {
-                    !connected -> dim
-                    syncing -> amber
+                    !hasWallet -> dim
+                    connecting || syncing -> amber
                     else -> Color(0xFF35C759)
                 },
                 fontFamily = mono, fontSize = 9.sp, fontWeight = FontWeight.Bold,
             )
         }
-        if (syncing) {
+        if (connecting) {
+            Text(
+                "connecting…", color = amber,
+                fontFamily = mono, fontSize = 20.sp, fontWeight = FontWeight.Bold,
+            )
+        } else if (syncing) {
             // wallet still scanning the chain -- show progress, not a partial balance
             Text(
                 "catching up…", color = amber,
@@ -617,6 +625,26 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
     var sending by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
 
+    // .glac resolution: a resolved name awaiting the user's confirm before send.
+    var pendingAddr by remember { mutableStateOf("") }
+    var pendingName by remember { mutableStateOf("") }
+    var pendingAmount by remember { mutableStateOf(0.0) }
+    var resolving by remember { mutableStateOf(false) }
+
+    // Broadcast a send (shared by the direct path and the .glac-confirm path).
+    fun doSend(toAddr: String, amt: Double, dispName: String?) {
+        if (sending) return
+        sending = true
+        result = "sending…"
+        scope.launch {
+            val r = withContext(Dispatchers.IO) { engine.send(toAddr, amt) }
+            result = if (r.startsWith("sent") && dispName != null) "$r  → $dispName" else r
+            sending = false
+            // clear on success so a second tap can't double-pay; keep on failure
+            if (r.startsWith("sent")) { addr = ""; amount = ""; pendingAddr = "" }
+        }
+    }
+
     // v1.1.12: QR scanner for the recipient address. ZXing's
     // ScanContract returns the decoded text in the result; we then
     // validate it looks like an R-address before populating the field
@@ -679,7 +707,7 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
             ) {
                 OutlinedTextField(
                     value = addr, onValueChange = { addr = it },
-                    label = { Text("recipient address") },
+                    label = { Text("recipient address or name.glac") },
                     singleLine = true,
                     textStyle = TextStyle(color = Color.White, fontFamily = mono, fontSize = 11.sp),
                     colors = darkTextFieldColors(),
@@ -716,29 +744,59 @@ private fun SendDialog(engine: MinerEngine, stats: MinerStats, onDismiss: () -> 
                         Color(0xFF35C759) else amber,
                 )
             }
-            TextButton(
-                onClick = {
-                    if (sending) return@TextButton
-                    sending = true
-                    result = "sending…"
-                    scope.launch {
-                        val r = withContext(Dispatchers.IO) {
-                            engine.send(addr, amount.toDoubleOrNull() ?: 0.0)
+            // .glac resolved -- show the real destination and require a confirm
+            if (pendingAddr.isNotEmpty()) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(10.dp))
+                        .background(card)
+                        .padding(11.dp),
+                    verticalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    Text("$pendingName resolves to", color = dim, fontFamily = mono, fontSize = 10.sp)
+                    Text(pendingAddr, color = amber, fontFamily = mono, fontSize = 10.sp)
+                    Text(
+                        "send %.6f GLAC to this address?".format(pendingAmount),
+                        color = Color.White, fontFamily = mono, fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                    )
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        TextButton(onClick = { pendingAddr = ""; result = "send cancelled" }) {
+                            Text("CANCEL", color = Color.White, fontWeight = FontWeight.Bold)
                         }
-                        result = r
-                        sending = false
-                        // Clear the recipient + amount on a successful
-                        // send so the user can't accidentally double-pay
-                        // by hitting SEND again. Keep them on failure so
-                        // the user can fix the issue and retry without
-                        // re-typing.
-                        if (r.startsWith("sent")) {
-                            addr = ""
-                            amount = ""
+                        TextButton(onClick = { doSend(pendingAddr, pendingAmount, pendingName) }) {
+                            Text("CONFIRM SEND", color = amber, fontWeight = FontWeight.Bold)
                         }
                     }
+                }
+            }
+            TextButton(
+                enabled = !resolving && pendingAddr.isEmpty(),
+                onClick = {
+                    if (sending || resolving) return@TextButton
+                    val raw = addr.trim()
+                    val amt = amount.toDoubleOrNull() ?: 0.0
+                    if (raw.lowercase().endsWith(".glac")) {
+                        // resolve the name first; the confirm block then shows
+                        // the real address before anything is broadcast
+                        resolving = true
+                        result = "resolving $raw…"
+                        scope.launch {
+                            val resolved = withContext(Dispatchers.IO) { engine.resolveGlac(raw) }
+                            resolving = false
+                            if (resolved == null) {
+                                result = "couldn't resolve $raw — name not found"
+                            } else {
+                                result = ""
+                                pendingName = raw; pendingAmount = amt; pendingAddr = resolved
+                            }
+                        }
+                    } else {
+                        doSend(raw, amt, null)
+                    }
                 },
-            ) { Text("SEND", color = amber, fontWeight = FontWeight.Bold) }
+            ) { Text(if (resolving) "RESOLVING…" else "SEND", color = amber, fontWeight = FontWeight.Bold) }
             TextButton(
                 onClick = {
                     if (sending) return@TextButton

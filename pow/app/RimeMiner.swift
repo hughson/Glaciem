@@ -652,20 +652,36 @@ private struct WalletPanel: View {
     @State private var showHistory = false
 
     var body: some View {
-        let syncing = stats.walletSyncing
+        // A wallet exists the moment its address is published (key derivation,
+        // no chain scan). "connecting" = open but not yet reached the daemon;
+        // "syncing" = connected but still scanning. These let us show real
+        // progress instead of a misleading "NO WALLET" during startup.
+        let hasWallet  = !walletAddrFull.isEmpty
+        let syncing    = stats.walletSyncing
+        let connecting = hasWallet && !walletConnected
         let pct = stats.targetHeight > 0
             ? min(UInt64(100), stats.walletHeight * 100 / stats.targetHeight) : 0
+        let statusText  = !hasWallet ? "NO WALLET"
+                        : connecting ? "CONNECTING…"
+                        : syncing    ? "SYNCING"
+                        :              "CONNECTED"
+        let statusColor: Color = !hasWallet ? dimText
+                        : (connecting || syncing) ? amber : .green
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
                 Text("WALLET")
                     .font(.system(size: 9, weight: .semibold, design: .monospaced))
                     .foregroundColor(dimText).tracking(1)
                 Spacer()
-                Text(!walletConnected ? "NO WALLET" : (syncing ? "SYNCING" : "CONNECTED"))
+                Text(statusText)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
-                    .foregroundColor(!walletConnected ? dimText : (syncing ? amber : .green))
+                    .foregroundColor(statusColor)
             }
-            if syncing {
+            if connecting {
+                Text("connecting…")
+                    .font(.system(size: 20, weight: .bold, design: .monospaced))
+                    .foregroundColor(amber)
+            } else if syncing {
                 // wallet still scanning the chain -- show progress, not a partial balance
                 Text("catching up…")
                     .font(.system(size: 20, weight: .bold, design: .monospaced))
@@ -702,19 +718,19 @@ private struct WalletPanel: View {
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundColor(bg)
                         .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(walletConnected ? amber : dimText)
+                        .background(hasWallet ? amber : dimText)
                         .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
-                .buttonStyle(.plain).disabled(!walletConnected)
+                .buttonStyle(.plain).disabled(!hasWallet)
                 Button(action: { showHistory = true }) {
                     Text("HISTORY")
                         .font(.system(size: 10, weight: .bold, design: .monospaced))
                         .foregroundColor(bg)
                         .padding(.horizontal, 12).padding(.vertical, 5)
-                        .background(walletConnected ? amber : dimText)
+                        .background(hasWallet ? amber : dimText)
                         .clipShape(RoundedRectangle(cornerRadius: 7))
                 }
-                .buttonStyle(.plain).disabled(!walletConnected)
+                .buttonStyle(.plain).disabled(!hasWallet)
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
@@ -829,12 +845,22 @@ private struct ReceiveSheet: View {
 }
 
 // MARK: send sheet
+// A .glac name that resolved and is awaiting the user's explicit confirmation
+// before we broadcast — so the user always sees the real destination address.
+private struct PendingGlacSend {
+    let address: String
+    let amount: Double
+    let name: String
+}
+
 private struct SendSheet: View {
     let balanceStr: String
     @Binding var showSend: Bool
     @State private var sendAddr = ""
     @State private var sendAmount = ""
     @State private var sendResult = ""
+    @State private var resolving = false
+    @State private var pending: PendingGlacSend? = nil
 
     var body: some View {
         VStack(spacing: 12) {
@@ -844,7 +870,7 @@ private struct SendSheet: View {
             Text("unlocked balance: \(balanceStr) GLAC")
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(dimText)
-            TextField("recipient address", text: $sendAddr)
+            TextField("recipient address or name.glac", text: $sendAddr)
                 .textFieldStyle(.roundedBorder)
                 .font(.system(size: 11, design: .monospaced))
             TextField("amount (GLAC)", text: $sendAmount)
@@ -857,25 +883,56 @@ private struct SendSheet: View {
                     .multilineTextAlignment(.center)
                     .frame(maxWidth: 330)
             }
-            Button(action: {
-                let r = String(cString: miner_send(sendAddr, Double(sendAmount) ?? 0))
-                sendResult = r
-                // Clear the recipient + amount on a successful send so the
-                // user can't accidentally hit SEND a second time and pay
-                // twice. Keep both fields on failure so the user can fix
-                // whatever was wrong (typo, insufficient funds, etc.) and
-                // retry without re-typing.
-                if r.hasPrefix("sent") {
-                    sendAddr = ""
-                    sendAmount = ""
+            if let p = pending {
+                // A .glac name resolved -- show exactly where the money will go
+                // and require an explicit confirm before broadcasting.
+                VStack(spacing: 7) {
+                    Text("\(p.name) resolves to")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(dimText)
+                    Text(p.address)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(amber)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 320)
+                        .textSelection(.enabled)
+                    Text("Send \(String(format: "%.6f", p.amount)) GLAC to this address?")
+                        .font(.system(size: 11, weight: .bold, design: .monospaced))
+                        .foregroundColor(.white)
+                    HStack(spacing: 10) {
+                        Button(action: { pending = nil; sendResult = "send cancelled" }) {
+                            Text("CANCEL")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(.white)
+                                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                .background(card).clipShape(RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                        Button(action: {
+                            let p2 = p; pending = nil
+                            doSend(to: p2.address, amount: p2.amount, name: p2.name)
+                        }) {
+                            Text("CONFIRM SEND")
+                                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                                .foregroundColor(bg)
+                                .frame(maxWidth: .infinity).padding(.vertical, 8)
+                                .background(amber).clipShape(RoundedRectangle(cornerRadius: 8))
+                        }.buttonStyle(.plain)
+                    }
                 }
-            }) {
-                Text("SEND")
+                .padding(11)
+                .frame(maxWidth: 340)
+                .background(card)
+                .overlay(RoundedRectangle(cornerRadius: 10).stroke(amber.opacity(0.5), lineWidth: 1))
+                .clipShape(RoundedRectangle(cornerRadius: 10))
+            }
+            Button(action: { performSend() }) {
+                Text(resolving ? "RESOLVING…" : (pending != nil ? "AWAITING CONFIRM" : "SEND"))
                     .font(.system(size: 13, weight: .heavy, design: .rounded))
                     .foregroundColor(bg)
                     .frame(maxWidth: .infinity).padding(.vertical, 10)
-                    .background(amber).clipShape(RoundedRectangle(cornerRadius: 9))
-            }.buttonStyle(.plain)
+                    .background((resolving || pending != nil) ? dimText : amber)
+                    .clipShape(RoundedRectangle(cornerRadius: 9))
+            }.buttonStyle(.plain).disabled(resolving || pending != nil)
             Button(action: {
                 sendResult = String(cString: miner_sweep_unmixable())
             }) {
@@ -901,6 +958,59 @@ private struct SendSheet: View {
         .padding(22)
         .frame(width: 380)
         .background(bg)
+    }
+
+    // Send to a typed address, or resolve a *.glac name first. The name service
+    // maps name.glac -> a GLAC address; the wallet itself doesn't understand
+    // names, so we resolve here and hand the wallet the resolved address.
+    private func performSend() {
+        let raw = sendAddr.trimmingCharacters(in: .whitespacesAndNewlines)
+        let amt = Double(sendAmount) ?? 0
+        if raw.lowercased().hasSuffix(".glac") {
+            resolving = true
+            sendResult = "resolving \(raw)…"
+            resolveGlac(raw.lowercased()) { addr in
+                DispatchQueue.main.async {
+                    self.resolving = false
+                    guard let addr = addr else {
+                        self.sendResult = "couldn't resolve \(raw) — name not found"
+                        return
+                    }
+                    // Don't broadcast yet -- stage it for an explicit confirm so
+                    // the user sees the resolved address before any money moves.
+                    self.sendResult = ""
+                    self.pending = PendingGlacSend(address: addr, amount: amt, name: raw)
+                }
+            }
+        } else {
+            doSend(to: raw, amount: amt, name: nil)
+        }
+    }
+
+    private func doSend(to address: String, amount: Double, name: String?) {
+        let r = String(cString: miner_send(address, amount))
+        // show the resolved name alongside the result for clarity
+        sendResult = (r.hasPrefix("sent") && name != nil) ? "\(r)  → \(name!)" : r
+        // clear on success so a second tap can't double-pay; keep on failure
+        if r.hasPrefix("sent") { sendAddr = ""; sendAmount = "" }
+    }
+
+    // GET <resolver>/resolve/<name>.glac -> { "address": "R..." } | { "error" }.
+    // Resolver base is RIME_GLAC_RESOLVER (defaults to the production host).
+    private func resolveGlac(_ name: String, completion: @escaping (String?) -> Void) {
+        let base = ProcessInfo.processInfo.environment["RIME_GLAC_RESOLVER"]
+            ?? "https://names.glaciem.io"
+        guard let url = URL(string: base + "/resolve/" + name) else { completion(nil); return }
+        var req = URLRequest(url: url)
+        req.timeoutInterval = 10
+        URLSession.shared.dataTask(with: req) { data, _, _ in
+            guard let data = data,
+                  let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let addr = obj["address"] as? String, !addr.isEmpty else {
+                completion(nil); return
+            }
+            completion(addr)
+        }.resume()
     }
 }
 
@@ -961,6 +1071,16 @@ private func fmtTime(_ s: Double) -> String {
 // the embedded wallet's cache file -- lives in the app's Application Support dir
 private func walletPath() -> String {
     let fm = FileManager.default
+    // Testing override: when RIME_WALLET_DIR is set, keep the wallet there
+    // instead of the normal Application Support location. Lets a debug build
+    // exercise generate/restore in an isolated dir without touching the real
+    // mining wallet. Unset in normal/release use, so behavior is unchanged.
+    if let override = ProcessInfo.processInfo.environment["RIME_WALLET_DIR"],
+       !override.isEmpty {
+        let odir = URL(fileURLWithPath: override, isDirectory: true)
+        try? fm.createDirectory(at: odir, withIntermediateDirectories: true)
+        return odir.appendingPathComponent("wallet").path
+    }
     let dir = (fm.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
                ?? URL(fileURLWithPath: NSTemporaryDirectory()))
         .appendingPathComponent("RimeMiner", isDirectory: true)

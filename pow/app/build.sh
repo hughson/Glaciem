@@ -4,10 +4,19 @@ set -e
 cd "$(dirname "$0")"
 REPO="$(cd ../.. && pwd)"
 
-APP="Glaciem Miner.app"
+APP="${APP_NAME:-Glaciem Miner.app}"
 BIN="RimeMiner"
 VERSION="$(cat "$REPO/VERSION" | tr -d '[:space:]')"
 echo "Glaciem version: $VERSION"
+
+# Optional wallet/poll debug logging. Set RIME_WALLET_DEBUG=1 to bake in the
+# verbose wallet-core + poll-loop tracing (writes to RIME_WALLET_LOG, default
+# /tmp/rime-wallet-debug.log). Release builds leave this unset -> no logging.
+DBG=""
+if [ -n "$RIME_WALLET_DEBUG" ]; then
+  DBG="-DRIME_WALLET_DEBUG=1"
+  echo "  *** DEBUG WALLET LOGGING ON -> ${RIME_WALLET_LOG:-/tmp/rime-wallet-debug.log} ***"
+fi
 
 echo "[1/7] building keygen library (Rime's real crypto)..."
 ../keygen/build_macos_lib.sh
@@ -17,10 +26,10 @@ clang -c -O3 -funroll-loops -DLATTICE_NO_MAIN ../lattice_ref.c -o lattice.o
 
 echo "[3/7] compiling miner core (C / Objective-C, CPU-only)..."
 clang -c -O2 -I../wallet ../wallet/peer_cache.c -o peer_cache.o
-clang -c -fobjc-arc -O2 -I../keygen -I../wallet miner_core.m -o miner_core.o
+clang -c -fobjc-arc -O2 $DBG -I../keygen -I../wallet miner_core.m -o miner_core.o
 
 echo "[4/7] compiling embedded wallet (C ABI over Monero wallet_api)..."
-clang++ -c -std=gnu++17 -O2 \
+clang++ -c -std=gnu++17 -O2 $DBG \
   -I"$REPO/src" -I"$REPO/external" -I"$REPO/contrib/epee/include" \
   ../wallet/rime_wallet.cpp -o rime_wallet.o
 
@@ -65,9 +74,13 @@ codesign --force --deep --sign - "$APP" 2>/dev/null || echo "  (codesign skipped
 
 rm -f miner_core.o lattice.o rime_wallet.o peer_cache.o
 
-echo "installing to /Applications (so a stale copy can't crash on launch)..."
-rm -rf "/Applications/$APP"
-ditto "$APP" "/Applications/$APP"
-
-echo "done -- /Applications/$APP"
-echo "launch:  open \"/Applications/$APP\""
+if [ -n "$NO_INSTALL" ]; then
+  echo "done -- $(pwd)/$APP  (NO_INSTALL set; not copied to /Applications)"
+  echo "launch:  open \"$(pwd)/$APP\""
+else
+  echo "installing to /Applications (so a stale copy can't crash on launch)..."
+  rm -rf "/Applications/$APP"
+  ditto "$APP" "/Applications/$APP"
+  echo "done -- /Applications/$APP"
+  echo "launch:  open \"/Applications/$APP\""
+fi
