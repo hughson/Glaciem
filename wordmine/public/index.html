@@ -270,8 +270,10 @@
          yet, generate one right here — it never leaves this browser.</p>
       <div class="wallet-actions">
         <button class="btn" id="gen-wallet-btn">GENERATE NEW WALLET</button>
-        <button class="btn ghost" id="restore-wallet-btn">RESTORE FROM SEED</button>
       </div>
+      <p class="dim" style="margin-top:8px">Already have a Glaciem wallet (e.g. from the
+         desktop or Android app)? Just paste its address into the claim box below — you
+         never need to type your seed into a website.</p>
     </div>
     <div id="wallet-saved" hidden>
       <p class="dim">Saved address (remembered next visit):</p>
@@ -326,18 +328,10 @@
     <button class="btn" id="seed-continue" disabled>SAVE ADDRESS AND CONTINUE</button>
   </section>
 
-  <!-- RESTORE-FROM-SEED PANEL -->
-  <section id="wallet-restore" class="panel" hidden>
-    <h2>RESTORE FROM SEED</h2>
-    <p class="dim">Paste your 25-word Glaciem (or Monero-fork) recovery seed.
-       Separate words with spaces or newlines.</p>
-    <textarea id="restore-input" rows="3"
-              placeholder="abbey abducts ability ..."
-              autocapitalize="off" autocorrect="off" spellcheck="false"></textarea>
-    <p id="restore-err" class="err-line"></p>
-    <button class="btn" id="restore-go-btn">RESTORE</button>
-    <button class="btn ghost" id="restore-cancel-btn">CANCEL</button>
-  </section>
+  <!-- RESTORE-FROM-SEED panel removed for security: never enter a seed into a
+       web page (XSS / compromised-site / phishing risk). To receive payouts,
+       paste your public address into the claim box; real wallets and seed
+       restore live in the native Glaciem apps, which keep keys on-device. -->
 
   <!-- START SCREEN -->
   <section id="start" class="panel">

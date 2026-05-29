@@ -45,18 +45,12 @@
     walletChangeGoBtn:      $('wallet-change-go-btn'),
     walletChangeCancelBtn:  $('wallet-change-cancel-btn'),
     genWalletBtn:   $('gen-wallet-btn'),
-    restoreWalletBtn:$('restore-wallet-btn'),
     walletShow:     $('wallet-show'),
     walletShowAddr: $('wallet-show-addr'),
     walletShowSeed: $('wallet-show-seed'),
     seedCopyBtn:    $('seed-copy-btn'),
     seedConfirmCb:  $('seed-confirm-cb'),
     seedContinue:   $('seed-continue'),
-    walletRestore:  $('wallet-restore'),
-    restoreInput:   $('restore-input'),
-    restoreErr:     $('restore-err'),
-    restoreGoBtn:   $('restore-go-btn'),
-    restoreCancelBtn:$('restore-cancel-btn'),
   };
 
   let sessionId   = null;
@@ -448,7 +442,6 @@
 
   function hideAllWalletPanels() {
     els.walletShow.hidden = true;
-    els.walletRestore.hidden = true;
     // Drop the seed words from the DOM so they don't linger anywhere
     els.walletShowSeed.innerHTML = '';
     els.walletShowAddr.textContent = '';
@@ -497,7 +490,6 @@
     // Hide the wallet panel + start; show the seed-display panel
     els.walletPanel.hidden = true;
     els.start.hidden = true;
-    els.walletRestore.hidden = true;
     els.walletShow.hidden = false;
 
     // Stash the address (NOT the seed) on the continue button
@@ -510,7 +502,7 @@
     const seed = els.seedCopyBtn.dataset.seed || '';
     if (!seed) return;
     navigator.clipboard.writeText(seed).then(
-      () => toast('25 words copied — paste into wallet restore'),
+      () => toast('25 words copied — write them on paper; restore in the Glaciem app'),
       () => toast('Copy failed — select the words manually')
     );
   });
@@ -562,44 +554,12 @@
     renderSavedWallet();
   });
 
-  els.restoreWalletBtn.addEventListener('click', () => {
-    els.walletPanel.hidden = true;
-    els.start.hidden = true;
-    els.walletRestore.hidden = false;
-    els.restoreInput.value = '';
-    els.restoreErr.textContent = '';
-  });
-
-  els.restoreCancelBtn.addEventListener('click', () => {
-    els.walletRestore.hidden = true;
-    els.start.hidden = false;
-    renderSavedWallet();
-  });
-
-  els.restoreGoBtn.addEventListener('click', async () => {
-    els.restoreErr.textContent = '';
-    const raw = els.restoreInput.value.trim().toLowerCase();
-    const words = raw.split(/\s+/).filter(Boolean);
-    if (words.length !== 25) {
-      els.restoreErr.textContent = `Need exactly 25 words (got ${words.length}).`;
-      return;
-    }
-    let w;
-    try {
-      const { restoreFromMnemonic } = await loadWalletMod();
-      w = restoreFromMnemonic(words);
-    } catch (e) {
-      els.restoreErr.textContent = e.message || 'Invalid seed.';
-      return;
-    }
-    // Restore is a "you already know the seed" flow -- don't re-display it.
-    // Just save the address and continue.
-    localStorage.setItem('wordmine.address', w.address);
-    els.walletRestore.hidden = true;
-    els.start.hidden = false;
-    renderSavedWallet();
-    toast('Wallet restored — address saved');
-  });
+  // NOTE: "restore from seed" was intentionally removed from the web app.
+  // Typing a 25-word seed into a web page exposes it to XSS / a compromised
+  // site / browser extensions, and normalises a phishable habit. To RECEIVE
+  // faucet payouts you only need to paste your public address into the claim
+  // box. Real wallets / seed restore belong in the native Glaciem apps, which
+  // generate and hold keys on-device.
 
   // ----- bootstrap --------------------------------------------------------
 
